@@ -188,41 +188,80 @@ function downloadVideoWithFallback(videoUrl, hasCookies) {
   const baseArgs = [
     '--js-runtimes', 'node',
     '--sleep-requests', '1',
-    '-f', 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+    '-f', 'bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b',
     '--merge-output-format', 'mp4',
     '--match-filter', '!is_live',
-    '--write-auto-sub', '--sub-format', 'vtt',
     '-o', 'source.%(ext)s',
   ];
+
+  if (process.env.YTDLP_PROXY && process.env.YTDLP_PROXY.trim()) {
+    baseArgs.push('--proxy', process.env.YTDLP_PROXY.trim());
+    console.log('Using configured YTDLP_PROXY for yt-dlp requests.');
+  }
+
+  const bgutilArgs = process.env.GITHUB_ACTIONS
+    ? ['--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416']
+    : [];
 
   const strategies = [];
   if (hasCookies) {
     strategies.push({
-      label: 'cookies + mweb/tv/web_creator + bgutil PO token',
-      extraArgs: ['--cookies', 'cookies.txt', '--extractor-args', 'youtube:player_client=mweb,web_creator,tv'],
+      label: 'cookies + mweb/tv/web_safari + bgutil PO token',
+      extraArgs: ['--cookies', 'cookies.txt', ...bgutilArgs, '--extractor-args', 'youtube:player_client=mweb,tv,web_safari,web_creator'],
     });
     strategies.push({
       label: 'cookies + default client + bgutil PO token',
-      extraArgs: ['--cookies', 'cookies.txt'],
+      extraArgs: ['--cookies', 'cookies.txt', ...bgutilArgs],
     });
   }
   strategies.push({
-    label: 'cookieless + mweb/tv_embedded/android_vr + bgutil PO token',
-    extraArgs: ['--extractor-args', 'youtube:player_client=mweb,tv_embedded,android_vr'],
+    label: 'cookieless + mweb/android_vr + bgutil PO token',
+    extraArgs: [...bgutilArgs, '--extractor-args', 'youtube:player_client=mweb,android_vr'],
   });
 
   let lastError = null;
+  let winningExtraArgs = null;
   for (const strategy of strategies) {
     console.log(`Trying yt-dlp strategy: ${strategy.label}`);
     try {
       execFileSync('yt-dlp', [...baseArgs, ...strategy.extraArgs, videoUrl], { stdio: 'inherit' });
-      if (fs.existsSync('source.mp4')) return;
+      if (fs.existsSync('source.mp4')) {
+        winningExtraArgs = strategy.extraArgs;
+        break;
+      }
     } catch (err) {
       lastError = err;
       console.warn(`Strategy failed (${strategy.label}), trying next fallback...`);
     }
   }
-  throw lastError || new Error('All yt-dlp download strategies failed.');
+
+  if (!winningExtraArgs) {
+    throw lastError || new Error('All yt-dlp download strategies failed.');
+  }
+
+  try {
+    const subArgs = ['--js-runtimes', 'node', '--skip-download', '--write-auto-sub', '--sub-format', 'vtt', '-o', 'source.%(ext)s'];
+    if (process.env.YTDLP_PROXY && process.env.YTDLP_PROXY.trim()) {
+      subArgs.push('--proxy', process.env.YTDLP_PROXY.trim());
+    }
+    execFileSync('yt-dlp', [...subArgs, ...winningExtraArgs, videoUrl], { stdio: 'inherit' });
+  } catch {
+    console.warn('Auto-subtitles unavailable or rate-limited; falling back to video title & description for Gemini.');
+  }
+}
+
+function getVideoDurationSec(filePath) {
+  try {
+    const raw = execFileSync(
+      'ffprobe',
+      ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', filePath],
+      { encoding: 'utf8' }
+    ).trim();
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
 }
 
 async function run() {
@@ -258,11 +297,24 @@ async function run() {
     const subtitleText = vttFile ? fs.readFileSync(vttFile, 'utf8') : chosenVideo.description;
 
     const clipPlan = await detectViralClipWithGemini(chosenVideo, subtitleText);
-    const start = Math.max(0, Math.floor(clipPlan.startSec || 10));
-    const duration = Math.min(58, Math.max(20, Math.floor((clipPlan.endSec || start + CLIP_DURATION) - start)));
+    const totalDuration = getVideoDurationSec('source.mp4');
+    let start = Math.max(0, Math.floor(clipPlan.startSec || 10));
+    let duration = Math.min(58, Math.max(15, Math.floor((clipPlan.endSec || start + CLIP_DURATION) - start)));
+    if (totalDuration > 0) {
+      if (start >= totalDuration - 10) start = 0;
+      duration = Math.min(duration, Math.max(5, Math.floor(totalDuration - start)));
+    }
 
     const srtBody = (clipPlan.captions || [])
-      .map((c, idx) => `${idx + 1}\n${toSrtTime(c.startSec)} --> ${toSrtTime(c.endSec)}\n${c.text}`)
+      .map((c, idx) => {
+        const rawStart = Number(c.startSec || 0);
+        const rawEnd = Number(c.endSec || rawStart + 3);
+        const relStart = rawStart >= start && start > 0 ? rawStart - start : rawStart;
+        const relEnd = rawEnd >= start && start > 0 ? rawEnd - start : rawEnd;
+        const clampedStart = Math.max(0, Math.min(duration - 0.5, relStart));
+        const clampedEnd = Math.max(clampedStart + 0.5, Math.min(duration, relEnd));
+        return `${idx + 1}\n${toSrtTime(clampedStart)} --> ${toSrtTime(clampedEnd)}\n${c.text}`;
+      })
       .join('\n\n');
     fs.writeFileSync('captions.srt', srtBody || `1\n00:00:00,000 --> 00:00:04,000\n${clipPlan.shortTitle}\n`);
 
