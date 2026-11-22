@@ -5,7 +5,7 @@ import { google } from 'googleapis';
 
 const HISTORY_FILE = './history.json';
 const CHANNEL_IDS = (process.env.SOURCE_CHANNEL_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
-const CAPTION_LANG = process.env.CAPTION_LANGUAGE || 'ur';
+const CAPTION_LANG = (process.env.CAPTION_LANGUAGE || 'en').trim().toLowerCase();
 const CLIP_DURATION = Number(process.env.CLIP_DURATION_SEC || '45');
 const VISIBILITY = process.env.UPLOAD_VISIBILITY || 'public';
 
@@ -62,6 +62,13 @@ async function detectViralClipWithGemini(video, subtitleText) {
   const models = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
   let lastErr = null;
 
+  const languageRule =
+    CAPTION_LANG === 'ur'
+      ? 'Write shortTitle, shortDescription, and captions in crisp Urdu script.'
+      : CAPTION_LANG === 'roman-ur'
+        ? 'Write shortTitle, shortDescription, and captions in punchy Roman Urdu.'
+        : 'Write shortTitle, shortDescription, hashtags, and EVERY caption line STRICTLY in punchy, viral English ONLY (3-5 words per caption line, natural YouTube Shorts style, ZERO Urdu or non-English characters).';
+
   for (const model of models) {
     try {
       const response = await ai.models.generateContent({
@@ -70,7 +77,8 @@ async function detectViralClipWithGemini(video, subtitleText) {
 Title: ${video.title}
 Description: ${video.description.slice(0, 600)}
 Transcript excerpt: ${subtitleText.slice(0, 6000)}
-Generate punchy captions in language: ${CAPTION_LANG} (ur=Urdu script, roman-ur=Roman Urdu, en=English).`,
+${languageRule}
+Keep caption timestamps relative to the start of the clip (starting from 0 seconds).`,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
@@ -176,10 +184,6 @@ function prepareCookiesFile(rawCookies) {
   const ytLines = lines.filter((l) => /youtube\.com|google\.com/i.test(l.split('\t')[0] || '')).length;
   const hasAuth = lines.some((l) => /\t(LOGIN_INFO|__Secure-3PSID|__Secure-1PSID|SAPISID|SID)\t/.test(l));
   console.log(`Loaded YOUTUBE_COOKIES (${format}): ${ytLines} YouTube/Google entries, authCookiePresent=${hasAuth}`);
-  if (!hasAuth) {
-    console.warn('Warning: YOUTUBE_COOKIES does not appear to contain signed-in YouTube auth cookies (e.g. LOGIN_INFO / __Secure-3PSID).');
-  }
-
   fs.writeFileSync('cookies.txt', netscapeBody, 'utf8');
   return true;
 }
@@ -196,7 +200,6 @@ function downloadVideoWithFallback(videoUrl, hasCookies) {
 
   if (process.env.YTDLP_PROXY && process.env.YTDLP_PROXY.trim()) {
     baseArgs.push('--proxy', process.env.YTDLP_PROXY.trim());
-    console.log('Using configured YTDLP_PROXY for yt-dlp requests.');
   }
 
   const bgutilArgs = process.env.GITHUB_ACTIONS
@@ -318,12 +321,17 @@ async function run() {
       .join('\n\n');
     fs.writeFileSync('captions.srt', srtBody || `1\n00:00:00,000 --> 00:00:04,000\n${clipPlan.shortTitle}\n`);
 
+    const subtitleStyle =
+      CAPTION_LANG === 'ur'
+        ? "FontName=Noto Sans Arabic,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=2,Alignment=2,MarginV=75"
+        : "FontName=Arial,FontSize=20,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=3,Shadow=1,Alignment=2,MarginV=95";
+
     execFileSync('ffmpeg', [
       '-y',
       '-ss', String(start),
       '-i', 'source.mp4',
       '-t', String(duration),
-      '-vf', "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,subtitles=captions.srt:force_style='FontName=Noto Sans Arabic,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=2,Alignment=2,MarginV=75'",
+      '-vf', `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,subtitles=captions.srt:force_style='${subtitleStyle}'`,
       '-c:v', 'libx264', '-preset', 'fast', '-crf', '22',
       '-c:a', 'aac', '-b:a', '128k',
       '-movflags', '+faststart',
