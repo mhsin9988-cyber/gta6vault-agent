@@ -1,0 +1,56 @@
+name: ClipPulse 24/7 YouTube Auto-Clip Agent
+
+on:
+  schedule:
+    - cron: '0 21 * * *' # 16:00 (America/New_York (EST, UTC-5))
+    - cron: '0 22 * * *' # 17:00 (America/New_York (EST, UTC-5))
+    - cron: '0 23 * * *' # 18:00 (America/New_York (EST, UTC-5))
+  workflow_dispatch: # Run manually anytime from GitHub Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  clip-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install yt-dlp binary, FFmpeg, and Urdu/Arabic Noto Fonts (100% Free)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg fonts-noto-core fontconfig
+          sudo fc-cache -fv
+          sudo curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Run ClipPulse AI Clipping & Upload Agent
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          SOURCE_CHANNEL_IDS: 'UCxYc7wg6otUcDb5bWxTwWqA'
+          TARGET_CHANNEL_HANDLE: '@GTA6Vault3'
+          CAPTION_LANGUAGE: 'ur'
+          CAPTION_STYLE: 'karaoke'
+          CLIP_DURATION_SEC: '45'
+          UPLOAD_VISIBILITY: 'public'
+        run: node agent.mjs
+
+      - name: Persist uploaded clip history
+        run: |
+          git config user.name "clippulse-bot"
+          git config user.email "bot@clippulse.local"
+          git add history.json || true
+          git diff --staged --quiet || (git commit -m "Record uploaded Short clip" && git pull --rebase && git push)
