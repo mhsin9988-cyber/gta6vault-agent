@@ -5,6 +5,11 @@ import { google } from 'googleapis';
 
 const HISTORY_FILE = './history.json';
 const CHANNEL_IDS = (process.env.SOURCE_CHANNEL_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+const DISCOVERY_MODE = (process.env.DISCOVERY_MODE || 'hybrid').trim().toLowerCase();
+const USA_VIRAL_TOPICS = (process.env.USA_VIRAL_TOPICS || 'GTA 6 news gameplay,USA gaming viral moments,trending gaming stream highlights USA')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 const CAPTION_LANG = (process.env.CAPTION_LANGUAGE || 'en').trim().toLowerCase();
 const CLIP_DURATION = Number(process.env.CLIP_DURATION_SEC || '45');
 const VISIBILITY = process.env.UPLOAD_VISIBILITY || 'public';
@@ -314,22 +319,89 @@ function getVideoDurationSec(filePath) {
   }
 }
 
+function discoverViralUsaVideo(history) {
+  if (!USA_VIRAL_TOPICS.length) return null;
+  const startIdx = new Date().getUTCHours() % USA_VIRAL_TOPICS.length;
+  const orderedTopics = [
+    ...USA_VIRAL_TOPICS.slice(startIdx),
+    ...USA_VIRAL_TOPICS.slice(0, startIdx),
+  ];
+
+  for (const topic of orderedTopics) {
+    console.log(`Searching USA viral videos for topic: "${topic}"...`);
+    try {
+      const searchArgs = [
+        '--flat-playlist',
+        '--dump-json',
+        '--force-ipv4',
+        '--no-warnings',
+        '--extractor-args', 'youtube:lang=en',
+        `ytsearch15:${topic}`,
+      ];
+      if (process.env.YTDLP_PROXY && process.env.YTDLP_PROXY.trim()) {
+        searchArgs.unshift('--proxy', process.env.YTDLP_PROXY.trim());
+      }
+      const stdout = execFileSync('yt-dlp', searchArgs, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+      const candidates = stdout
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .filter((item) => {
+          if (!item || !item.id) return false;
+          if (history.uploadedClipKeys.includes(item.id)) return false;
+          if (item.live_status === 'is_live' || item.live_status === 'is_upcoming') return false;
+          const dur = Number(item.duration || 0);
+          return dur >= 75 && dur <= 3600;
+        })
+        .sort((a, b) => Number(b.view_count || 0) - Number(a.view_count || 0));
+
+      if (candidates.length > 0) {
+        const best = candidates[0];
+        console.log(`Selected USA viral candidate: "${best.title}" (views=${best.view_count || 'n/a'})`);
+        return {
+          videoId: best.id,
+          title: best.title || 'Viral USA Highlight',
+          description: best.description || best.title || topic,
+          url: `https://www.youtube.com/watch?v=${best.id}`,
+        };
+      }
+    } catch (err) {
+      console.warn(`USA viral search failed for "${topic}":`, err.message || err);
+    }
+  }
+  return null;
+}
+
 async function run() {
-  if (!CHANNEL_IDS.length) throw new Error('Set SOURCE_CHANNEL_IDS environment variable.');
+  if (!CHANNEL_IDS.length && DISCOVERY_MODE === 'channels_only') {
+    throw new Error('Set SOURCE_CHANNEL_IDS or use DISCOVERY_MODE=usa_viral.');
+  }
   if (!process.env.GEMINI_API_KEY) throw new Error('Missing GEMINI_API_KEY secret.');
   if (!process.env.YOUTUBE_REFRESH_TOKEN) throw new Error('Missing YOUTUBE_REFRESH_TOKEN secret.');
 
   const history = loadHistory();
   let chosenVideo = null;
 
-  for (const cid of CHANNEL_IDS) {
-    const videos = await fetchLatestVideosFromRss(cid);
-    chosenVideo = videos.find((v) => !history.uploadedClipKeys.includes(v.videoId));
-    if (chosenVideo) break;
+  if (DISCOVERY_MODE !== 'usa_viral') {
+    for (const cid of CHANNEL_IDS) {
+      const videos = await fetchLatestVideosFromRss(cid);
+      chosenVideo = videos.find((v) => !history.uploadedClipKeys.includes(v.videoId));
+      if (chosenVideo) break;
+    }
+  }
+
+  if (!chosenVideo && DISCOVERY_MODE !== 'channels_only') {
+    chosenVideo = discoverViralUsaVideo(history);
   }
 
   if (!chosenVideo) {
-    console.log('All recent videos from watched channels have already been clipped.');
+    console.log('No new unclipped videos found right now.');
     return;
   }
 
