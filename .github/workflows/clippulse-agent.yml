@@ -31,7 +31,7 @@ jobs:
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           SOURCE_CHANNEL_IDS: 'UCxYc7wg6otUcDb5bWxTwWqA'
           TARGET_CHANNEL_HANDLE: '@GTA6Vault3'
-          CAPTION_LANGUAGE: 'ur'
+          CAPTION_LANGUAGE: 'en'
           CAPTION_STYLE: 'karaoke'
           CLIP_DURATION_SEC: '45'
           UPLOAD_VISIBILITY: 'public'
