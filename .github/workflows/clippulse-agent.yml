@@ -34,7 +34,25 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-noto-core fontconfig
           sudo fc-cache -fv
           python -m pip install --upgrade pip
-          pip install --upgrade "yt-dlp[default]" yt-dlp-ejs bgutil-ytdlp-pot-provider
+          pip install --upgrade "yt-dlp[default]" yt-dlp-ejs bgutil-ytdlp-pot-provider pysocks
+      - name: Start Cloudflare WARP Local Proxy (Bypasses GitHub Azure IP Block)
+        continue-on-error: true
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -y
+          sudo apt-get install -y cloudflare-warp
+          sudo systemctl start warp-svc
+          sleep 2
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos mode proxy
+          warp-cli --accept-tos proxy port 40000
+          warp-cli --accept-tos connect
+          sleep 3
+          if curl -sf --max-time 10 -x socks5://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace/ | grep -q "warp=on"; then
+            echo "WARP_PROXY=socks5://127.0.0.1:40000" >> "$GITHUB_ENV"
+            echo "Cloudflare WARP SOCKS5 proxy active on 127.0.0.1:40000"
+          fi
 
       - name: Start BGUtil YouTube PO Token Provider (Bypasses Cloud IP Bot Check)
         run: |
@@ -51,7 +69,7 @@ jobs:
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-          YTDLP_PROXY: ${{ secrets.YTDLP_PROXY }}
+          YTDLP_PROXY: ${{ secrets.YTDLP_PROXY || env.WARP_PROXY}}
           SOURCE_CHANNEL_IDS: 'UCxYc7wg6otUcDb5bWxTwWqA'
           TARGET_CHANNEL_HANDLE: '@GTA6Vault3'
           CAPTION_LANGUAGE: 'ur'
