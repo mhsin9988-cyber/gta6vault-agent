@@ -257,6 +257,14 @@ function downloadVideoWithFallback(videoUrl, hasCookies) {
     });
   }
   strategies.push({
+    label: 'default yt-dlp client (best for home/residential IP)',
+    extraArgs: ['--force-ipv4'],
+  });
+  strategies.push({
+    label: 'cookieless + tv/web_safari/android_vr fallback',
+    extraArgs: ['--force-ipv4', ...bgutilArgs, '--extractor-args', 'youtube:player_client=tv,web_safari,android_vr'],
+  });
+  strategies.push({
     label: 'cookieless + mweb/android_vr + bgutil PO token',
     extraArgs: [...bgutilArgs, '--extractor-args', 'youtube:player_client=mweb,android_vr'],
   });
