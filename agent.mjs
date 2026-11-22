@@ -1,8 +1,3 @@
-/**
- * ClipPulse 24/7 Autonomous YouTube Clip & Upload Agent
- * Runs free on GitHub Actions even when your PC/phone is turned OFF.
- * Uses YouTube Public RSS (0 quota) + yt-dlp + Gemini AI + FFmpeg 9:16 + YouTube Data API v3 (10,000 free units/day).
- */
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -28,13 +23,10 @@ function cleanupTempFiles() {
     if (
       file.startsWith('source.') ||
       file === 'output_short.mp4' ||
-      file === 'captions.srt'
+      file === 'captions.srt' ||
+      file === 'cookies.txt'
     ) {
-      try {
-        fs.unlinkSync(file);
-      } catch {
-        // Ignore cleanup errors
-      }
+      try { fs.unlinkSync(file); } catch {}
     }
   }
 }
@@ -163,14 +155,24 @@ async function run() {
   cleanupTempFiles();
   try {
     console.log('Processing latest video:', chosenVideo.title);
-    execFileSync('yt-dlp', [
+    const ytDlpArgs = [
+      '--js-runtimes', 'node',
       '-f', 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
       '--merge-output-format', 'mp4',
       '--match-filter', '!is_live',
       '--write-auto-sub', '--sub-format', 'vtt',
       '-o', 'source.%(ext)s',
-      chosenVideo.url,
-    ], { stdio: 'inherit' });
+    ];
+
+    if (process.env.YOUTUBE_COOKIES && process.env.YOUTUBE_COOKIES.trim()) {
+      fs.writeFileSync('cookies.txt', process.env.YOUTUBE_COOKIES.trim() + '\n', 'utf8');
+      ytDlpArgs.push('--cookies', 'cookies.txt');
+    } else {
+      ytDlpArgs.push('--extractor-args', 'youtube:player_client=tv_embedded,android_vr,web');
+    }
+
+    ytDlpArgs.push(chosenVideo.url);
+    execFileSync('yt-dlp', ytDlpArgs, { stdio: 'inherit' });
 
     if (!fs.existsSync('source.mp4')) {
       throw new Error('Video download was skipped (possibly a live stream) or source.mp4 was not created.');
@@ -188,7 +190,6 @@ async function run() {
       .join('\n\n');
     fs.writeFileSync('captions.srt', srtBody || `1\n00:00:00,000 --> 00:00:04,000\n${clipPlan.shortTitle}\n`);
 
-    // Safe 9:16 scale+crop (works for both 16:9 and vertical videos) + Noto Sans Arabic Urdu-compatible captions
     execFileSync('ffmpeg', [
       '-y',
       '-ss', String(start),
