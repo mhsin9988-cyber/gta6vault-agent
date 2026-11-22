@@ -22,14 +22,24 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: Install yt-dlp binary, FFmpeg, and Urdu/Arabic Noto Fonts (100% Free)
+      - name: Install yt-dlp, bgutil PO Token plugin, FFmpeg, and Urdu/Arabic Noto Fonts (100% Free)
         run: |
           sudo apt-get update -y
           sudo apt-get install -y ffmpeg fonts-noto-core fontconfig
           sudo fc-cache -fv
-          sudo curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-          sudo chmod a+rx /usr/local/bin/yt-dlp
+          python -m pip install --upgrade pip
+          pip install --upgrade yt-dlp bgutil-ytdlp-pot-provider
+
+      - name: Start BGUtil YouTube PO Token Provider (Bypasses Cloud IP Bot Check)
+        run: |
+          docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+          sleep 3
 
       - name: Install Node dependencies
         run: npm install
