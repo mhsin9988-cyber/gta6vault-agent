@@ -26,7 +26,11 @@ function cleanupTempFiles() {
       file === 'captions.srt' ||
       file === 'cookies.txt'
     ) {
-      try { fs.unlinkSync(file); } catch {}
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        // Ignore cleanup errors
+      }
     }
   }
 }
@@ -133,6 +137,94 @@ async function uploadShortToYouTube(videoPath, clipPlan) {
   return res.data.id;
 }
 
+function prepareCookiesFile(rawCookies) {
+  if (!rawCookies || !rawCookies.trim()) return false;
+  const trimmed = rawCookies.trim();
+  let format = 'netscape';
+  let netscapeBody = '';
+
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed.cookies) ? parsed.cookies : [];
+      const rows = list
+        .filter((c) => c && c.domain && c.name && c.value !== undefined)
+        .map((c) => {
+          const domain = String(c.domain);
+          const includeSub = domain.startsWith('.') ? 'TRUE' : 'FALSE';
+          const path = String(c.path || '/');
+          const secure = c.secure ? 'TRUE' : 'FALSE';
+          const expiry = c.expirationDate ? Math.floor(Number(c.expirationDate)) : 0;
+          return `${domain}\t${includeSub}\t${path}\t${secure}\t${expiry}\t${c.name}\t${c.value}`;
+        });
+      if (rows.length > 0) {
+        format = 'converted-json';
+        netscapeBody = '# Netscape HTTP Cookie File\n' + rows.join('\n') + '\n';
+      }
+    } catch {
+      // Fall through to raw Netscape handling
+    }
+  }
+
+  if (!netscapeBody) {
+    const normalized = trimmed.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const hasHeader = /^#\s*(Netscape|HTTP Cookie File)/i.test(normalized);
+    netscapeBody = (hasHeader ? normalized : '# Netscape HTTP Cookie File\n' + normalized) + '\n';
+  }
+
+  const lines = netscapeBody.split('\n').filter((l) => l && !l.startsWith('#'));
+  const ytLines = lines.filter((l) => /youtube\.com|google\.com/i.test(l.split('\t')[0] || '')).length;
+  const hasAuth = lines.some((l) => /\t(LOGIN_INFO|__Secure-3PSID|__Secure-1PSID|SAPISID|SID)\t/.test(l));
+  console.log(`Loaded YOUTUBE_COOKIES (${format}): ${ytLines} YouTube/Google entries, authCookiePresent=${hasAuth}`);
+  if (!hasAuth) {
+    console.warn('Warning: YOUTUBE_COOKIES does not appear to contain signed-in YouTube auth cookies (e.g. LOGIN_INFO / __Secure-3PSID).');
+  }
+
+  fs.writeFileSync('cookies.txt', netscapeBody, 'utf8');
+  return true;
+}
+
+function downloadVideoWithFallback(videoUrl, hasCookies) {
+  const baseArgs = [
+    '--js-runtimes', 'node',
+    '--sleep-requests', '1',
+    '-f', 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+    '--merge-output-format', 'mp4',
+    '--match-filter', '!is_live',
+    '--write-auto-sub', '--sub-format', 'vtt',
+    '-o', 'source.%(ext)s',
+  ];
+
+  const strategies = [];
+  if (hasCookies) {
+    strategies.push({
+      label: 'cookies + mweb/tv/web_creator + bgutil PO token',
+      extraArgs: ['--cookies', 'cookies.txt', '--extractor-args', 'youtube:player_client=mweb,web_creator,tv'],
+    });
+    strategies.push({
+      label: 'cookies + default client + bgutil PO token',
+      extraArgs: ['--cookies', 'cookies.txt'],
+    });
+  }
+  strategies.push({
+    label: 'cookieless + mweb/tv_embedded/android_vr + bgutil PO token',
+    extraArgs: ['--extractor-args', 'youtube:player_client=mweb,tv_embedded,android_vr'],
+  });
+
+  let lastError = null;
+  for (const strategy of strategies) {
+    console.log(`Trying yt-dlp strategy: ${strategy.label}`);
+    try {
+      execFileSync('yt-dlp', [...baseArgs, ...strategy.extraArgs, videoUrl], { stdio: 'inherit' });
+      if (fs.existsSync('source.mp4')) return;
+    } catch (err) {
+      lastError = err;
+      console.warn(`Strategy failed (${strategy.label}), trying next fallback...`);
+    }
+  }
+  throw lastError || new Error('All yt-dlp download strategies failed.');
+}
+
 async function run() {
   if (!CHANNEL_IDS.length) throw new Error('Set SOURCE_CHANNEL_IDS environment variable.');
   if (!process.env.GEMINI_API_KEY) throw new Error('Missing GEMINI_API_KEY secret.');
@@ -155,24 +247,8 @@ async function run() {
   cleanupTempFiles();
   try {
     console.log('Processing latest video:', chosenVideo.title);
-    const ytDlpArgs = [
-      '--js-runtimes', 'node',
-      '-f', 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-      '--merge-output-format', 'mp4',
-      '--match-filter', '!is_live',
-      '--write-auto-sub', '--sub-format', 'vtt',
-      '-o', 'source.%(ext)s',
-    ];
-
-    if (process.env.YOUTUBE_COOKIES && process.env.YOUTUBE_COOKIES.trim()) {
-      fs.writeFileSync('cookies.txt', process.env.YOUTUBE_COOKIES.trim() + '\n', 'utf8');
-      ytDlpArgs.push('--cookies', 'cookies.txt');
-    } else {
-      ytDlpArgs.push('--extractor-args', 'youtube:player_client=tv_embedded,android_vr,web');
-    }
-
-    ytDlpArgs.push(chosenVideo.url);
-    execFileSync('yt-dlp', ytDlpArgs, { stdio: 'inherit' });
+    const hasCookies = prepareCookiesFile(process.env.YOUTUBE_COOKIES);
+    downloadVideoWithFallback(chosenVideo.url, hasCookies);
 
     if (!fs.existsSync('source.mp4')) {
       throw new Error('Video download was skipped (possibly a live stream) or source.mp4 was not created.');
