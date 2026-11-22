@@ -40,6 +40,7 @@ jobs:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
           SOURCE_CHANNEL_IDS: 'UCxYc7wg6otUcDb5bWxTwWqA'
           TARGET_CHANNEL_HANDLE: '@GTA6Vault3'
           CAPTION_LANGUAGE: 'ur'
