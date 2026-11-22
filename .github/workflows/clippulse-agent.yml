@@ -2,9 +2,11 @@ name: ClipPulse 24/7 YouTube Auto-Clip Agent
 
 on:
   schedule:
-    - cron: '0 21 * * *' # 16:00 (America/New_York EST, UTC-5)
-    - cron: '0 22 * * *' # 17:00 (America/New_York EST, UTC-5)
-    - cron: '0 23 * * *' # 18:00 (America/New_York EST, UTC-5)
+    - cron: '0 15 * * *' # 10:00 AM EST (USA Peak 1)
+    - cron: '0 18 * * *' # 01:00 PM EST (USA Peak 2)
+    - cron: '0 21 * * *' # 04:00 PM EST (USA Peak 3)
+    - cron: '0 0 * * *'  # 07:00 PM EST (USA Peak 4)
+    - cron: '0 3 * * *'  # 10:00 PM EST (USA Peak 5)
   workflow_dispatch:
 
 permissions:
@@ -30,6 +32,8 @@ jobs:
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           SOURCE_CHANNEL_IDS: 'UCxYc7wg6otUcDb5bWxTwWqA'
+          DISCOVERY_MODE: 'hybrid'
+          USA_VIRAL_TOPICS: 'GTA 6 news gameplay,USA gaming viral moments,trending gaming stream highlights USA,best Twitch stream moments USA'
           TARGET_CHANNEL_HANDLE: '@GTA6Vault3'
           CAPTION_LANGUAGE: 'en'
           CAPTION_STYLE: 'karaoke'
