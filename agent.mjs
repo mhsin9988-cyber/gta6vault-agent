@@ -57,6 +57,32 @@ function toSrtTime(sec) {
   return `${h}:${m}:${s},${ms}`;
 }
 
+function cleanVttTranscript(raw) {
+  const seen = new Set();
+  const cleanLines = [];
+  for (const line of String(raw || '').split(/\r?\n/)) {
+    const trimmed = line
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .trim();
+    if (
+      !trimmed ||
+      trimmed === 'WEBVTT' ||
+      /^Kind:|^Language:/i.test(trimmed) ||
+      /^\d{2}:\d{2}:\d{2}\.\d{3}\s*-->/.test(trimmed) ||
+      /^\d+$/.test(trimmed)
+    ) {
+      continue;
+    }
+    if (!seen.has(trimmed)) {
+      seen.add(trimmed);
+      cleanLines.push(trimmed);
+    }
+  }
+  return cleanLines.join(' ').slice(0, 3500);
+}
+
 async function detectViralClipWithGemini(video, subtitleText) {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const models = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
@@ -69,16 +95,23 @@ async function detectViralClipWithGemini(video, subtitleText) {
         ? 'Write shortTitle, shortDescription, and captions in punchy Roman Urdu.'
         : 'Write shortTitle, shortDescription, hashtags, and EVERY caption line STRICTLY in punchy, viral English ONLY (3-5 words per caption line, natural YouTube Shorts style, ZERO Urdu or non-English characters).';
 
+  const cleanTranscript = cleanVttTranscript(subtitleText);
+
   for (const model of models) {
     try {
       const response = await ai.models.generateContent({
         model,
-        contents: `Analyze this YouTube video and pick the single highest-retention ${CLIP_DURATION}-second vertical Short segment.
+        contents: `Analyze this YouTube video and pick ONE highest-retention ${CLIP_DURATION}-second vertical Short segment.
 Title: ${video.title}
-Description: ${video.description.slice(0, 600)}
-Transcript excerpt: ${subtitleText.slice(0, 6000)}
-${languageRule}
-Keep caption timestamps relative to the start of the clip (starting from 0 seconds).`,
+Description: ${video.description.slice(0, 400)}
+Transcript excerpt: ${cleanTranscript}
+
+STRICT OUTPUT LIMITS (keep JSON compact and valid):
+- ${languageRule}
+- shortTitle: max 70 characters.
+- shortDescription: 1-2 short sentences (max 180 characters).
+- hashtags: ONLY 4 to 5 short hashtags.
+- captions: ONLY 8 to 14 caption objects total covering 0 to ${CLIP_DURATION} seconds (3-5 words per caption). Never repeat captions.`,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
@@ -104,7 +137,13 @@ Keep caption timestamps relative to the start of the clip (starting from 0 secon
           },
         },
       });
-      if (response.text) return JSON.parse(response.text);
+      if (response.text) {
+        const parsed = JSON.parse(response.text.trim());
+        if (Array.isArray(parsed.captions)) {
+          parsed.captions = parsed.captions.slice(0, 16);
+        }
+        return parsed;
+      }
     } catch (err) {
       lastErr = err;
       await new Promise((r) => setTimeout(r, 1200));
