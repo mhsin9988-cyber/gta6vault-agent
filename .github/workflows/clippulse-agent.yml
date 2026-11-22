@@ -39,8 +39,7 @@ jobs:
 
       - name: Persist uploaded clip history
         shell: cmd
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.name "clippulse-bot"
-          git config user.email "bot@clippulse.local"
-          if exist history.json git add history.json
-          git diff --staged --quiet || (git commit -m "Record uploaded Short clip" && git pull --rebase && git push)
+          node -e "const fs=require('fs');if(!fs.existsSync('history.json'))process.exit(0);const content=fs.readFileSync('history.json','base64');const headers={Authorization:'Bearer '+process.env.GITHUB_TOKEN,Accept:'application/vnd.github+json','User-Agent':'clippulse'};const url='https://api.github.com/repos/'+process.env.GITHUB_REPOSITORY+'/contents/history.json';(async()=>{const r=await fetch(url,{headers});const cur=r.ok?await r.json():null;if(cur&&cur.content&&cur.content.replace(/\s+/g,'')===content)process.exit(0);const u=await fetch(url,{method:'PUT',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({message:'Record uploaded Short clip',content,sha:cur?cur.sha:undefined})});if(!u.ok)throw new Error(await u.text());console.log('Saved history.json to GitHub!');})();"
