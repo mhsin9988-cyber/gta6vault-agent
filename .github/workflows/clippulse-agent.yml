@@ -2,74 +2,33 @@ name: ClipPulse 24/7 YouTube Auto-Clip Agent
 
 on:
   schedule:
-    - cron: '0 21 * * *' # 16:00 (America/New_York (EST, UTC-5))
-    - cron: '0 22 * * *' # 17:00 (America/New_York (EST, UTC-5))
-    - cron: '0 23 * * *' # 18:00 (America/New_York (EST, UTC-5))
-  workflow_dispatch: # Run manually anytime from GitHub Actions tab
+    - cron: '0 21 * * *' # 16:00 (America/New_York EST, UTC-5)
+    - cron: '0 22 * * *' # 17:00 (America/New_York EST, UTC-5)
+    - cron: '0 23 * * *' # 18:00 (America/New_York EST, UTC-5)
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   clip-and-upload:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install yt-dlp, bgutil PO Token plugin, FFmpeg, and Urdu/Arabic Noto Fonts (100% Free)
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y ffmpeg fonts-noto-core fontconfig
-          sudo fc-cache -fv
-          python -m pip install --upgrade pip
-          pip install --upgrade "yt-dlp[default]" yt-dlp-ejs bgutil-ytdlp-pot-provider pysocks
-      - name: Start Cloudflare WARP Local Proxy (Bypasses GitHub Azure IP Block)
-        continue-on-error: true
-        run: |
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update -y
-          sudo apt-get install -y cloudflare-warp
-          sudo systemctl start warp-svc
-          sleep 2
-          warp-cli --accept-tos registration new
-          warp-cli --accept-tos mode proxy
-          warp-cli --accept-tos proxy port 40000
-          warp-cli --accept-tos connect
-          sleep 3
-          if curl -sf --max-time 10 -x socks5://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace/ | grep -q "warp=on"; then
-            echo "WARP_PROXY=socks5://127.0.0.1:40000" >> "$GITHUB_ENV"
-            echo "Cloudflare WARP SOCKS5 proxy active on 127.0.0.1:40000"
-          fi
-
-      - name: Start BGUtil YouTube PO Token Provider (Bypasses Cloud IP Bot Check)
-        run: |
-          docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
-          sleep 3
-
       - name: Install Node dependencies
-        run: npm install
+        shell: cmd
+        run: npm.cmd install
 
       - name: Run ClipPulse AI Clipping & Upload Agent
+        shell: cmd
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-          YTDLP_PROXY: ${{ secrets.YTDLP_PROXY || env.WARP_PROXY}}
           SOURCE_CHANNEL_IDS: 'UCxYc7wg6otUcDb5bWxTwWqA'
           TARGET_CHANNEL_HANDLE: '@GTA6Vault3'
           CAPTION_LANGUAGE: 'ur'
@@ -79,8 +38,9 @@ jobs:
         run: node agent.mjs
 
       - name: Persist uploaded clip history
+        shell: cmd
         run: |
           git config user.name "clippulse-bot"
           git config user.email "bot@clippulse.local"
-          git add history.json || true
+          if exist history.json git add history.json
           git diff --staged --quiet || (git commit -m "Record uploaded Short clip" && git pull --rebase && git push)
