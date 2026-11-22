@@ -1,0 +1,13 @@
+{
+  "name": "clippulse-24-7-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node agent.mjs",
+    "auth": "node get-youtube-token.mjs"
+  },
+  "dependencies": {
+    "@google/genai": "^3.6.1",
+    "googleapis": "^144.0.0"
+  }
+}
