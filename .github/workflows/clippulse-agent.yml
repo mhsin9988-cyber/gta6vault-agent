@@ -2,12 +2,12 @@ name: ClipPulse 24/7 YouTube Auto-Clip Agent
 
 on:
   schedule:
-    - cron: '0 15 * * *' # 10:00 AM EST (USA Peak 1)
-    - cron: '0 18 * * *' # 01:00 PM EST (USA Peak 2)
-    - cron: '0 21 * * *' # 04:00 PM EST (USA Peak 3)
-    - cron: '0 0 * * *'  # 07:00 PM EST (USA Peak 4)
-    - cron: '0 3 * * *'  # 10:00 PM EST (USA Peak 5)
-  workflow_dispatch:
+    - cron: '5 18 * * *' # 13:05 (America/New_York (EST, UTC-5))
+    - cron: '5 20 * * *' # 15:05 (America/New_York (EST, UTC-5))
+    - cron: '5 22 * * *' # 17:05 (America/New_York (EST, UTC-5))
+    - cron: '5 0 * * *' # 19:05 (America/New_York (EST, UTC-5))
+    - cron: '5 2 * * *' # 21:05 (America/New_York (EST, UTC-5))
+  workflow_dispatch: # Run manually anytime from GitHub Actions tab
 
 permissions:
   contents: write
@@ -15,7 +15,7 @@ permissions:
 jobs:
   clip-and-upload:
     runs-on: self-hosted
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
         shell: cmd
         run: npm.cmd install
 
-      - name: Run ClipPulse AI Clipping & Upload Agent
+      - name: Run ClipPulse GTA 6 USA 24h Viral Hunter & Upload Agent
         shell: cmd
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -32,8 +32,15 @@ jobs:
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           SOURCE_CHANNEL_IDS: 'UCxYc7wg6otUcDb5bWxTwWqA'
-          DISCOVERY_MODE: 'hybrid'
-          USA_VIRAL_TOPICS: 'GTA 6 news gameplay,USA gaming viral moments,trending gaming stream highlights USA,best Twitch stream moments USA'
+          DISCOVERY_MODE: 'usa_viral'
+          CREATOR_REGION: 'US'
+          MAX_VIDEO_AGE_HOURS: '24'
+          MAX_CLIPS_PER_RUN: '1'
+          INCLUDE_LIVE_VODS: 'true'
+          PRIORITIZE_CLIP_ALLOWED: 'true'
+          PRIORITIZE_BIG_CREATORS: 'true'
+          MIN_CREATOR_SUBSCRIBERS: '50000'
+          USA_VIRAL_TOPICS: 'GTA 6 easter egg secret found,GTA 6 funny moments gameplay clips,GTA 6 new discovery hidden detail update,GTA 6 live stream highlights reaction'
           TARGET_CHANNEL_HANDLE: '@GTA6Vault3'
           CAPTION_LANGUAGE: 'en'
           CAPTION_STYLE: 'karaoke'
@@ -45,5 +52,5 @@ jobs:
         shell: cmd
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          node -e "const fs=require('fs');if(!fs.existsSync('history.json'))process.exit(0);const content=fs.readFileSync('history.json','base64');const headers={Authorization:'Bearer '+process.env.GITHUB_TOKEN,Accept:'application/vnd.github+json','User-Agent':'clippulse'};const url='https://api.github.com/repos/'+process.env.GITHUB_REPOSITORY+'/contents/history.json';(async()=>{const r=await fetch(url,{headers});const cur=r.ok?await r.json():null;if(cur&&cur.content&&cur.content.replace(/\s+/g,'')===content)process.exit(0);const u=await fetch(url,{method:'PUT',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({message:'Record uploaded Short clip',content,sha:cur?cur.sha:undefined})});if(!u.ok)throw new Error(await u.text());console.log('Saved history.json to GitHub!');})();"
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node -e "const fs=require('fs');if(!fs.existsSync('history.json'))process.exit(0);const content=fs.readFileSync('history.json').toString('base64');const repo=process.env.GITHUB_REPOSITORY;const h={Authorization:'Bearer '+process.env.GITHUB_TOKEN,'User-Agent':'clippulse','Content-Type':'application/json'};(async()=>{const r=await fetch('https://api.github.com/repos/'+repo+'/contents/history.json',{headers:h});const d=r.ok?await r.json():{};const put=await fetch('https://api.github.com/repos/'+repo+'/contents/history.json',{method:'PUT',headers:h,body:JSON.stringify({message:'Record uploaded Short clip',content,sha:d.sha})});if(!put.ok)throw new Error(await put.text());console.log('history.json saved to GitHub!');})();"
