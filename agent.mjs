@@ -739,10 +739,26 @@ async function uploadShortToYouTube(videoPath, clipPlan, sourceVideo) {
 }
 
 function prepareCookiesFile(rawCookies) {
-  if (!rawCookies || !rawCookies.trim()) return false;
-  const trimmed = rawCookies.trim();
+  if (!rawCookies || !rawCookies.trim()) {
+    console.warn('NOTICE: YOUTUBE_COOKIES secret is not set. On GitHub Cloud servers, add a throwaway/alt Google account cookies.txt in GitHub Secrets -> YOUTUBE_COOKIES to bypass YouTube bot checks.');
+    return false;
+  }
+  let trimmed = rawCookies.trim();
   let format = 'netscape';
   let netscapeBody = '';
+
+  // Support Base64-encoded cookies.txt automatically
+  if (!trimmed.includes('\t') && !trimmed.includes('#') && /^[A-Za-z0-9+/=\r\n]+$/.test(trimmed) && trimmed.length > 80) {
+    try {
+      const decoded = Buffer.from(trimmed.replace(/\s+/g, ''), 'base64').toString('utf8').trim();
+      if (decoded.includes('youtube.com') || decoded.includes('google.com') || decoded.startsWith('#') || decoded.startsWith('[')) {
+        trimmed = decoded;
+        format = 'base64-decoded';
+      }
+    } catch {
+      // Fall through to raw parsing
+    }
+  }
 
   if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
     try {
@@ -810,13 +826,23 @@ function downloadVideoWithFallback(videoUrl, hasCookies, durationSec = 0) {
   const strategies = [];
   if (hasCookies) {
     strategies.push({
-      label: 'cookies + proxy + mweb/tv/web_safari + bgutil PO token',
-      extraArgs: [...proxyArgs, '--cookies', 'cookies.txt', ...bgutilArgs, '--extractor-args', 'youtube:player_client=mweb,tv,web_safari,web_creator'],
+      label: 'cookies + direct + default client + bgutil PO token',
+      extraArgs: ['--force-ipv4', '--cookies', 'cookies.txt', ...bgutilArgs],
     });
     strategies.push({
-      label: 'cookies + direct + default client + bgutil PO token',
-      extraArgs: ['--cookies', 'cookies.txt', ...bgutilArgs],
+      label: 'cookies + direct + web/mweb/tv + bgutil PO token',
+      extraArgs: ['--force-ipv4', '--cookies', 'cookies.txt', ...bgutilArgs, '--extractor-args', 'youtube:player_client=web,mweb,tv'],
     });
+    strategies.push({
+      label: 'cookies + direct (pure yt-dlp without bgutil)',
+      extraArgs: ['--force-ipv4', '--cookies', 'cookies.txt'],
+    });
+    if (proxyUrl) {
+      strategies.push({
+        label: 'cookies + WARP/proxy + web/mweb/tv + bgutil PO token',
+        extraArgs: [...proxyArgs, '--force-ipv4', '--cookies', 'cookies.txt', ...bgutilArgs, '--extractor-args', 'youtube:player_client=web,mweb,tv'],
+      });
+    }
   }
   if (proxyUrl) {
     strategies.push({
@@ -854,7 +880,7 @@ function downloadVideoWithFallback(videoUrl, hasCookies, durationSec = 0) {
   }
 
   if (!winningExtraArgs) {
-    throw lastError || new Error('All yt-dlp download strategies failed.');
+    throw lastError || new Error('All yt-dlp download strategies failed. Add a throwaway Google account cookies.txt into GitHub Secret YOUTUBE_COOKIES.');
   }
 
   try {
