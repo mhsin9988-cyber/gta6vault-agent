@@ -102,7 +102,7 @@ jobs:
           TARGET_CHANNEL_HANDLE: '@GTA6Vault3'
           CAPTION_LANGUAGE: 'en'
           CAPTION_STYLE: 'karaoke'
-          CLIP_DURATION_SEC: '42'
+          CLIP_DURATION_SEC: '85'
           UPLOAD_VISIBILITY: 'public'
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
           YTDLP_PROXY: ${{ secrets.YTDLP_PROXY || env.WARP_PROXY }}
