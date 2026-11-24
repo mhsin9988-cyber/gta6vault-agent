@@ -1,9 +1,10 @@
 /**
- * ClipPulse 24/7 Autonomous YouTube Clip & Upload Agent
- * Last-24h GTA 6 USA Viral Hunter Edition:
- * 1. Scans YouTube's Last 24 Hours (sp=EgIIAg%3D%3D, gl=US) across GTA 6 Easter Eggs, Funny Moments, New Discoveries & Live Stream VODs (0 YouTube API quota).
- * 2. Verifies each creator's public YouTube /about country metadata and rejects non-USA creators when CREATOR_REGION=US.
- * 3. Uses Gemini AI to rank the Top 3 highest viral-potential candidates and auto-clips/uploads Top 1 (or Top 3) with punchy English Shorts captions.
+ * ClipPulse 24/7 Autonomous Cloud YouTube Clip & Upload Agent
+ * Global USA/UK GTA 6 Viral & Copyright-Safe Edition (PC-OFF Ready):
+ * 1. Scans YouTube across GTA 6 Easter Eggs, Leaks, Game Comparisons, New Discoveries & Trending Hooks (Last 24h -> This Week -> Creative Commons reuse-allowed, 0 API quota).
+ * 2. Enforces Copyright-Safe / Clip-Allowed checks (YouTube Clips enabled, Creative Commons, or explicit creator clip permission; rejects corporate/restricted channels).
+ * 3. Uses Gemini AI to rank Top viral hooks, clips & renders transformative 9:16 vertical Shorts with top viral hook banner + safe-zone captions + loudnorm audio.
+ * 4. Automatically falls back across the ranked candidate pool if any single video fails cloud download, ensuring reliable 3x/day uploads.
  */
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -12,23 +13,24 @@ import { google } from 'googleapis';
 
 const HISTORY_FILE = './history.json';
 const CHANNEL_IDS = (process.env.SOURCE_CHANNEL_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
-const DISCOVERY_MODE = (process.env.DISCOVERY_MODE || 'usa_viral').trim().toLowerCase();
-const CREATOR_REGION = (process.env.CREATOR_REGION || 'US').trim().toUpperCase();
-const MAX_VIDEO_AGE_HOURS = Number(process.env.MAX_VIDEO_AGE_HOURS || '24');
+const DISCOVERY_MODE = (process.env.DISCOVERY_MODE || 'hybrid').trim().toLowerCase();
+const CREATOR_REGION = (process.env.CREATOR_REGION || 'US_UK_GLOBAL').trim().toUpperCase();
+const MAX_VIDEO_AGE_HOURS = Number(process.env.MAX_VIDEO_AGE_HOURS || '48');
 const MAX_CLIPS_PER_RUN = Math.max(1, Math.min(3, Number(process.env.MAX_CLIPS_PER_RUN || '1')));
 const INCLUDE_LIVE_VODS = (process.env.INCLUDE_LIVE_VODS || 'true').trim().toLowerCase() !== 'false';
 const PRIORITIZE_CLIP_ALLOWED = (process.env.PRIORITIZE_CLIP_ALLOWED || 'true').trim().toLowerCase() !== 'false';
+const REQUIRE_CLIP_ALLOWED = (process.env.REQUIRE_CLIP_ALLOWED || 'true').trim().toLowerCase() !== 'false';
 const PRIORITIZE_BIG_CREATORS = (process.env.PRIORITIZE_BIG_CREATORS || 'true').trim().toLowerCase() !== 'false';
-const MIN_CREATOR_SUBSCRIBERS = Number(process.env.MIN_CREATOR_SUBSCRIBERS || '50000');
+const MIN_CREATOR_SUBSCRIBERS = Number(process.env.MIN_CREATOR_SUBSCRIBERS || '25000');
 const USA_VIRAL_TOPICS = (
   process.env.USA_VIRAL_TOPICS ||
-  'GTA 6 easter egg secret found,GTA 6 funny moments gameplay clips,GTA 6 new discovery hidden detail update,GTA 6 live stream highlights reaction'
+  'GTA 6 easter egg hidden secret details,GTA 6 leaks new discovery breakdown,GTA 6 vs GTA 5 RDR2 comparison graphics physics,GTA 6 crazy moments viral trending clips,GTA 6 map details trailer breakdown new update'
 )
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 const CAPTION_LANG = (process.env.CAPTION_LANGUAGE || 'en').trim().toLowerCase();
-const CLIP_DURATION = Number(process.env.CLIP_DURATION_SEC || '45');
+const CLIP_DURATION = Number(process.env.CLIP_DURATION_SEC || '42');
 const VISIBILITY = process.env.UPLOAD_VISIBILITY || 'public';
 
 const channelProfileCache = new Map();
@@ -50,6 +52,7 @@ function cleanupTempFiles() {
       file.startsWith('source.') ||
       file === 'output_short.mp4' ||
       file === 'captions.srt' ||
+      file === 'captions.ass' ||
       file === 'cookies.txt'
     ) {
       try {
@@ -95,7 +98,9 @@ function parseCompactNumber(raw) {
   return Math.round(num);
 }
 
-const CLIP_PERMISSION_REGEX = /\b(feel free to clip|clips? allowed|clipping allowed|free to clip|permission to clip|reuse allowed|creative commons|make clips|clip this stream|clip my stream)\b/i;
+const CLIP_PERMISSION_REGEX = /\b(feel free to clip|clips? allowed|clipping allowed|free to clip|permission to clip|reuse allowed|creative commons|make clips|clip this stream|clip my stream|no copyright|free to use|reaction friendly)\b/i;
+const COPYRIGHT_RESTRICTED_REGEX = /\b(do not reupload|no reuploads?|strictly prohibited|no permission to clip|copyright strike|do not clip|unauthorized use is prohibited)\b/i;
+const CORPORATE_RISK_CHANNELS = /^(rockstar games|ign|gamespot|playstation|xbox|nintendo|take-two interactive|netflix|espn|vevo)$/i;
 
 async function fetchChannelProfile(channelId, channelUrl) {
   const cacheKey = channelId || channelUrl || '';
@@ -140,7 +145,8 @@ async function fetchChannelProfile(channelId, channelUrl) {
 
     const country = countryMatch && countryMatch[1] ? countryMatch[1].trim() : 'Unlisted';
     const isUs = /^(united states|united states of america|usa|us)$/i.test(country);
-    const status = country === 'Unlisted' ? 'UNKNOWN' : isUs ? 'US' : 'NON_US';
+    const isUk = /^(united kingdom|uk|great britain|england)$/i.test(country);
+    const status = country === 'Unlisted' ? 'UNKNOWN' : isUs ? 'US' : isUk ? 'UK' : 'OTHER';
     const subscriberLabel = subMatch && subMatch[1] ? subMatch[1].replace(/\s*subscribers?/i, '').trim() : 'Unknown';
     const subscriberCount = parseCompactNumber(subscriberLabel);
     const aboutClipFriendly = CLIP_PERMISSION_REGEX.test(html.slice(0, 250000));
@@ -156,11 +162,12 @@ async function fetchChannelProfile(channelId, channelUrl) {
   }
 }
 
-async function inspectVideoClipPermission(videoId) {
+async function inspectVideoClipPermission(videoId, channelName = '') {
   const defaultPerm = {
     youtubeClipsEnabled: false,
     isCreativeCommons: false,
     explicitClipPermission: false,
+    copyrightRestricted: CORPORATE_RISK_CHANNELS.test(String(channelName || '').trim()),
   };
   if (!videoId) return defaultPerm;
   if (clipPermissionCache.has(videoId)) return clipPermissionCache.get(videoId);
@@ -191,8 +198,11 @@ async function inspectVideoClipPermission(videoId) {
     const descMatch = html.match(/"shortDescription"\s*:\s*"((?:[^"\\]|\\.)*)"/);
     const shortDesc = descMatch ? descMatch[1] : '';
     const explicitClipPermission = CLIP_PERMISSION_REGEX.test(shortDesc);
+    const copyrightRestricted =
+      CORPORATE_RISK_CHANNELS.test(String(channelName || '').trim()) ||
+      COPYRIGHT_RESTRICTED_REGEX.test(shortDesc);
 
-    const result = { youtubeClipsEnabled, isCreativeCommons, explicitClipPermission };
+    const result = { youtubeClipsEnabled, isCreativeCommons, explicitClipPermission, copyrightRestricted };
     clipPermissionCache.set(videoId, result);
     return result;
   } catch {
@@ -205,26 +215,30 @@ async function inspectVideoClipPermission(videoId) {
 
 function computeCandidatePriorityScore(cand) {
   let score = 0;
-  // 1. Creator size priority (Big Creators get highest boost)
-  if (PRIORITIZE_BIG_CREATORS) {
-    const subs = Number(cand.subscriberCount || 0);
-    if (subs >= 1_000_000) score += 40;
-    else if (subs >= 250_000) score += 30;
-    else if (subs >= 100_000) score += 22;
-    else if (subs >= MIN_CREATOR_SUBSCRIBERS) score += 12;
-  }
-  // 2. Clip-Allowed / Streamer Clip-Friendly priority
+  // 1. Copyright-Safe / Clip-Allowed priority (Highest weight for monetization safety)
   if (PRIORITIZE_CLIP_ALLOWED) {
-    if (cand.isCreativeCommons || cand.explicitClipPermission || cand.aboutClipFriendly) score += 35;
+    if (cand.isCreativeCommons) score += 45;
+    if (cand.explicitClipPermission || cand.aboutClipFriendly) score += 35;
     if (cand.youtubeClipsEnabled) score += 25;
   }
-  // 3. Verified USA Creator + Completed Stream VOD bonus
-  if (cand.isUsaVerified) score += 20;
-  if (cand.wasLive && (cand.youtubeClipsEnabled || cand.explicitClipPermission || cand.aboutClipFriendly)) {
-    score += 15;
+  // 2. Creator size authority (Big Creators get strong boost)
+  if (PRIORITIZE_BIG_CREATORS) {
+    const subs = Number(cand.subscriberCount || 0);
+    if (subs >= 1_000_000) score += 35;
+    else if (subs >= 250_000) score += 26;
+    else if (subs >= 100_000) score += 20;
+    else if (subs >= MIN_CREATOR_SUBSCRIBERS) score += 12;
   }
-  // 4. 24h View velocity score (0-25 pts)
-  score += Math.min(25, Math.round(Math.log10(Math.max(10, Number(cand.viewCount || 0))) * 4));
+  // 3. USA / UK Creator boost + Viral angle keywords (Easter Eggs, Leaks, Comparisons)
+  if (cand.isUsaVerified || cand.isUkVerified) score += 20;
+  if (/easter egg|leak|vs|comparison|secret|hidden|new detail|breakdown|crazy|insane/i.test(cand.title || '')) {
+    score += 18;
+  }
+  if (cand.wasLive && (cand.youtubeClipsEnabled || cand.explicitClipPermission || cand.aboutClipFriendly)) {
+    score += 10;
+  }
+  // 4. View velocity score (0-30 pts)
+  score += Math.min(30, Math.round(Math.log10(Math.max(10, Number(cand.viewCount || 0))) * 5));
   return score;
 }
 
@@ -249,18 +263,38 @@ function searchYouTubeByTimeWindow(topic, spFilter) {
   if (process.env.YTDLP_PROXY && process.env.YTDLP_PROXY.trim()) {
     searchArgs.unshift('--proxy', process.env.YTDLP_PROXY.trim());
   }
-  const stdout = execFileSync('yt-dlp', searchArgs, { encoding: 'utf8', maxBuffer: 25 * 1024 * 1024 });
-  return stdout
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
+  try {
+    const stdout = execFileSync('yt-dlp', searchArgs, { encoding: 'utf8', maxBuffer: 25 * 1024 * 1024 });
+    return stdout
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch (err) {
+    // If proxy caused search error, retry directly without proxy
+    if (process.env.YTDLP_PROXY && process.env.YTDLP_PROXY.trim()) {
+      const directArgs = searchArgs.slice(2);
+      const stdout = execFileSync('yt-dlp', directArgs, { encoding: 'utf8', maxBuffer: 25 * 1024 * 1024 });
+      return stdout
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+    }
+    throw err;
+  }
 }
 
 async function discoverLast24hGta6UsaCandidates(history) {
@@ -268,19 +302,24 @@ async function discoverLast24hGta6UsaCandidates(history) {
 
   // YouTube search protobuf filters:
   // EgIIAg%3D%3D = Upload date: Today (Last 24 hours)
-  // EgIIAw%3D%3D = Upload date: This week (fallback if last 24h has 0 fresh hits)
-  const primaryFilter = MAX_VIDEO_AGE_HOURS <= 24 ? 'EgIIAg%3D%3D' : 'EgIIAw%3D%3D';
-  const filtersToTry = primaryFilter === 'EgIIAg%3D%3D' ? ['EgIIAg%3D%3D', 'EgIIAw%3D%3D'] : ['EgIIAw%3D%3D'];
+  // EgIIAw%3D%3D = Upload date: This week (7 days)
+  // EgIwAQ%3D%3D = Creative Commons (Reuse Allowed — Copyright Free)
+  const searchPasses = [
+    ...(MAX_VIDEO_AGE_HOURS <= 24 ? [{ sp: 'EgIIAg%3D%3D', label: 'Last 24 Hours' }] : []),
+    { sp: 'EgIIAw%3D%3D', label: 'This Week (Viral)' },
+    { sp: 'EgIwAQ%3D%3D', label: 'Creative Commons (Copyright-Free)' },
+  ];
 
-  for (const spFilter of filtersToTry) {
-    const windowLabel = spFilter === 'EgIIAg%3D%3D' ? 'Last 24 Hours' : 'This Week (fallback)';
-    console.log(`Scanning YouTube [${windowLabel}] across ${USA_VIRAL_TOPICS.length} GTA 6 USA viral topics...`);
-    const dedupMap = new Map();
+  const dedupMap = new Map();
 
-    for (const topic of USA_VIRAL_TOPICS) {
-      console.log(`  -> Searching "${topic}" (${windowLabel}, gl=US)...`);
+  for (const pass of searchPasses) {
+    console.log(`Scanning YouTube [${pass.label}] across ${USA_VIRAL_TOPICS.length} GTA 6 viral topics...`);
+    const topicsForPass = pass.sp === 'EgIwAQ%3D%3D' ? USA_VIRAL_TOPICS.slice(0, 3) : USA_VIRAL_TOPICS;
+
+    for (const topic of topicsForPass) {
+      console.log(`  -> Searching "${topic}" (${pass.label})...`);
       try {
-        const rawItems = searchYouTubeByTimeWindow(topic, spFilter);
+        const rawItems = searchYouTubeByTimeWindow(topic, pass.sp);
         for (const item of rawItems) {
           if (!item || !item.id || dedupMap.has(item.id)) continue;
           if (history.uploadedClipKeys.includes(item.id)) continue;
@@ -289,89 +328,106 @@ async function discoverLast24hGta6UsaCandidates(history) {
           if (!hasMostlyLatinText(item.title)) continue;
 
           const dur = Number(item.duration || 0);
-          if (dur < 75 || dur > 5400) continue;
+          if (dur < 65 || dur > 5400) continue;
 
           dedupMap.set(item.id, {
             videoId: item.id,
             title: item.title || 'GTA 6 Viral Highlight',
             description: item.description || item.title || topic,
-            channel: item.channel || item.uploader || 'Unknown Creator',
+            channel: item.channel || item.uploader || 'Creator',
             channelId: item.channel_id || '',
             channelUrl: item.channel_url || item.uploader_url || '',
             viewCount: Number(item.view_count || 0),
             durationSec: dur,
             wasLive: item.live_status === 'was_live',
+            fromCreativeCommonsPass: pass.sp === 'EgIwAQ%3D%3D',
             matchedTopic: topic,
             url: `https://www.youtube.com/watch?v=${item.id}`,
           });
         }
       } catch (err) {
-        console.warn(`Search failed for "${topic}":`, err.message || err);
+        console.warn(`Search failed for "${topic}" (${pass.label}):`, err.message || err);
       }
     }
 
-    const sortedRaw = Array.from(dedupMap.values()).sort((a, b) => b.viewCount - a.viewCount);
-    console.log(`Found ${sortedRaw.length} fresh unclipped candidates in ${windowLabel}. Checking USA creator profiles, subscriber counts & clip permissions...`);
-
-    const usaVerified = [];
-    const unlistedEnglish = [];
-
-    for (const cand of sortedRaw.slice(0, 16)) {
-      const profile = await fetchChannelProfile(cand.channelId, cand.channelUrl);
-      cand.creatorCountry = profile.country;
-      cand.isUsaVerified = profile.status === 'US';
-      cand.subscriberCount = profile.subscriberCount;
-      cand.subscriberLabel = profile.subscriberLabel;
-      cand.aboutClipFriendly = profile.aboutClipFriendly;
-
-      if (CREATOR_REGION === 'US' && profile.status === 'NON_US') {
-        console.log(`  [SKIP non-US] "${cand.title.slice(0, 50)}" by ${cand.channel} (${profile.country})`);
-        continue;
-      }
-
-      if (PRIORITIZE_CLIP_ALLOWED) {
-        const perm = await inspectVideoClipPermission(cand.videoId);
-        cand.youtubeClipsEnabled = perm.youtubeClipsEnabled;
-        cand.isCreativeCommons = perm.isCreativeCommons;
-        cand.explicitClipPermission = perm.explicitClipPermission;
-      } else {
-        cand.youtubeClipsEnabled = false;
-        cand.isCreativeCommons = false;
-        cand.explicitClipPermission = false;
-      }
-
-      cand.priorityScore = computeCandidatePriorityScore(cand);
-      const clipTag =
-        cand.isCreativeCommons || cand.explicitClipPermission || cand.aboutClipFriendly
-          ? 'CLIP-PERMITTED'
-          : cand.youtubeClipsEnabled
-            ? 'YT-CLIPS-ON'
-            : 'standard';
-
-      if (CREATOR_REGION !== 'US' || profile.status === 'US') {
-        console.log(
-          `  [USA | ${cand.subscriberLabel} subs | ${clipTag} | prio=${cand.priorityScore}] "${cand.title.slice(0, 52)}" by ${cand.channel} (views=${cand.viewCount})`
-        );
-        usaVerified.push(cand);
-      } else {
-        unlistedEnglish.push(cand);
-      }
-    }
-
-    usaVerified.sort((a, b) => b.priorityScore - a.priorityScore);
-    unlistedEnglish.sort((a, b) => b.priorityScore - a.priorityScore);
-
-    const shortlisted =
-      usaVerified.length >= 5
-        ? usaVerified.slice(0, 12)
-        : [...usaVerified, ...unlistedEnglish].slice(0, 12);
-
-    if (shortlisted.length > 0) {
-      return shortlisted;
+    if (dedupMap.size >= 18 && pass.sp !== 'EgIwAQ%3D%3D') {
+      // Still allow Creative Commons pass to run if strict clip-allowed is enabled
+      if (!REQUIRE_CLIP_ALLOWED) break;
     }
   }
 
-  return [];
+  const sortedRaw = Array.from(dedupMap.values()).sort((a, b) => {
+    if (a.fromCreativeCommonsPass !== b.fromCreativeCommonsPass) {
+      return a.fromCreativeCommonsPass ? -1 : 1;
+    }
+    return b.viewCount - a.viewCount;
+  });
+
+  console.log(`Found ${sortedRaw.length} fresh unclipped GTA 6 candidates. Checking copyright safety, clip permissions & creator authority...`);
+
+  const verifiedPool = [];
+  const fallbackPool = [];
+
+  for (const cand of sortedRaw.slice(0, 24)) {
+    const profile = await fetchChannelProfile(cand.channelId, cand.channelUrl);
+    cand.creatorCountry = profile.country;
+    cand.isUsaVerified = profile.status === 'US';
+    cand.isUkVerified = profile.status === 'UK';
+    cand.subscriberCount = profile.subscriberCount;
+    cand.subscriberLabel = profile.subscriberLabel;
+    cand.aboutClipFriendly = profile.aboutClipFriendly;
+
+    if (CREATOR_REGION === 'US' && profile.status !== 'US' && profile.status !== 'UNKNOWN') {
+      console.log(`  [SKIP non-US] "${cand.title.slice(0, 50)}" by ${cand.channel} (${profile.country})`);
+      continue;
+    }
+
+    const perm = await inspectVideoClipPermission(cand.videoId, cand.channel);
+    cand.youtubeClipsEnabled = perm.youtubeClipsEnabled;
+    cand.isCreativeCommons = perm.isCreativeCommons || cand.fromCreativeCommonsPass;
+    cand.explicitClipPermission = perm.explicitClipPermission;
+    cand.copyrightRestricted = perm.copyrightRestricted;
+
+    if (cand.copyrightRestricted) {
+      console.log(`  [SKIP copyright-risk] "${cand.title.slice(0, 50)}" by ${cand.channel}`);
+      continue;
+    }
+
+    const isClipSafe =
+      cand.isCreativeCommons ||
+      cand.explicitClipPermission ||
+      cand.aboutClipFriendly ||
+      cand.youtubeClipsEnabled;
+
+    if (REQUIRE_CLIP_ALLOWED && !isClipSafe) {
+      console.log(`  [SKIP clips-disabled] "${cand.title.slice(0, 50)}" by ${cand.channel}`);
+      continue;
+    }
+
+    cand.priorityScore = computeCandidatePriorityScore(cand);
+    const clipTag = cand.isCreativeCommons
+      ? 'CREATIVE-COMMONS'
+      : cand.explicitClipPermission || cand.aboutClipFriendly
+        ? 'CLIP-PERMITTED'
+        : cand.youtubeClipsEnabled
+          ? 'YT-CLIPS-ON'
+          : 'standard';
+
+    console.log(
+      `  [${cand.creatorCountry} | ${cand.subscriberLabel} subs | ${clipTag} | prio=${cand.priorityScore}] "${cand.title.slice(0, 52)}" by ${cand.channel} (views=${cand.viewCount})`
+    );
+
+    if (cand.isUsaVerified || cand.isUkVerified || isClipSafe) {
+      verifiedPool.push(cand);
+    } else {
+      fallbackPool.push(cand);
+    }
+  }
+
+  verifiedPool.sort((a, b) => b.priorityScore - a.priorityScore);
+  fallbackPool.sort((a, b) => b.priorityScore - a.priorityScore);
+
+  return [...verifiedPool, ...fallbackPool].slice(0, 14);
 }
 
 async function rankTop3ViralWithGemini(candidates) {
@@ -385,7 +441,7 @@ async function rankTop3ViralWithGemini(candidates) {
     title: c.title,
     channel: c.channel,
     creatorCountry: c.creatorCountry,
-    isUsaVerified: c.isUsaVerified,
+    isUsaOrUk: Boolean(c.isUsaVerified || c.isUkVerified),
     subscriberCount: c.subscriberCount || 0,
     subscriberLabel: c.subscriberLabel || 'Unknown',
     youtubeClipsEnabled: Boolean(c.youtubeClipsEnabled),
@@ -402,25 +458,24 @@ async function rankTop3ViralWithGemini(candidates) {
     try {
       const response = await ai.models.generateContent({
         model,
-        contents: `You are a viral YouTube Shorts strategist specializing in GTA 6 (Grand Theft Auto VI) USA gaming content.
-Review these fresh videos uploaded in the last ${MAX_VIDEO_AGE_HOURS} hours and select the TOP 3 videos with the HIGHEST viral Shorts potential.
+        contents: `You are a viral YouTube Shorts strategist growing a GTA 6 Shorts channel to 10M views for monetization (USA & UK audience).
+Review these fresh, copyright-safe candidates and rank the TOP 8 videos from #1 (highest viral views potential) to #8.
 
-CRITERIA (strict priority order):
-1. HIGHEST PRIORITY: Big USA creators (high subscriberCount: 100K+, 500K+, 1M+) whose video or completed live stream has clipping allowed (youtubeClipsEnabled=true, isCreativeCommons=true, or explicitClipPermission=true).
-2. Content must be about GTA 6 Easter eggs, hilarious/funny moments, brand-new discoveries/secrets, or hype live stream highlights.
-3. Strongly prioritize verified United States (USA) creators (isUsaVerified=true) and high priorityScore; reject non-US or clickbait spam.
-4. Combine big-creator authority + clip-allowed status + viral payoff into viralScore (1-100).
+STRICT PRIORITY ORDER:
+1. COPYRIGHT-SAFE & CLIP-ALLOWED FIRST: Strongly favor isCreativeCommons=true, explicitClipPermission=true, or youtubeClipsEnabled=true.
+2. HIGHEST VIRAL SHORTS HOOKS: GTA 6 Easter eggs, leaks, new hidden discoveries, GTA 6 vs GTA 5 / RDR2 comparisons, shocking details, or trending gameplay moments that make viewers watch to the end and replay.
+3. USA / UK AUDIENCE APPEAL: Favor high viewCount, big creator authority, and high priorityScore. Reject boring clickbait or low-energy filler.
 
 CANDIDATES:
 ${JSON.stringify(summaryRows, null, 2)}
 
-Return ONLY the Top 3 ranked picks ordered from #1 (highest viral & creator priority) to #3.`,
+Return the top ranked picks ordered from #1 (best) to #8.`,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              top3: {
+              topPicks: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
@@ -439,7 +494,7 @@ Return ONLY the Top 3 ranked picks ordered from #1 (highest viral & creator prio
 
       if (response.text) {
         const parsed = JSON.parse(response.text.trim());
-        const picks = Array.isArray(parsed.top3) ? parsed.top3 : [];
+        const picks = Array.isArray(parsed.topPicks) ? parsed.topPicks : [];
         const byId = new Map(candidates.map((c) => [c.videoId, c]));
         const ranked = [];
         for (const pick of picks) {
@@ -453,38 +508,99 @@ Return ONLY the Top 3 ranked picks ordered from #1 (highest viral & creator prio
             });
           }
         }
+        // Append remaining unranked candidates as download fallbacks
+        for (const c of candidates) {
+          if (!ranked.some((r) => r.videoId === c.videoId)) {
+            ranked.push(c);
+          }
+        }
         if (ranked.length > 0) {
-          console.log('\n=== TOP 3 VIRAL GTA 6 (USA / BIG CREATOR / CLIP-PRIORITY) PICKS ===');
-          ranked.slice(0, 3).forEach((item, i) => {
-            const clipFlag = item.isCreativeCommons || item.explicitClipPermission || item.aboutClipFriendly
-              ? 'Clip Permitted'
-              : item.youtubeClipsEnabled
-                ? 'YT Clips Enabled'
-                : 'Standard';
+          console.log('\n=== TOP VIRAL GTA 6 (USA/UK/GLOBAL • COPYRIGHT-SAFE) LEADERBOARD ===');
+          ranked.slice(0, 5).forEach((item, i) => {
+            const clipFlag = item.isCreativeCommons
+              ? 'Creative Commons'
+              : item.explicitClipPermission || item.aboutClipFriendly
+                ? 'Clip Permitted'
+                : item.youtubeClipsEnabled
+                  ? 'YT Clips Enabled'
+                  : 'Standard';
             console.log(
-              `#${i + 1} [Score ${item.viralScore}/100] [${item.viralCategory}] [${item.subscriberLabel} subs | ${clipFlag}] "${item.title}" by ${item.channel} (${item.creatorCountry}, views=${item.viewCount}) — ${item.viralReason}`
+              `#${i + 1} [Score ${item.viralScore || item.priorityScore}/100] [${item.viralCategory || 'GTA 6'}] [${item.subscriberLabel} subs | ${clipFlag}] "${item.title}" by ${item.channel} (${item.creatorCountry}, views=${item.viewCount}) — ${item.viralReason || 'High viral score'}`
             );
           });
-          console.log('==================================================================\n');
-          return ranked.slice(0, 3);
+          console.log('====================================================================\n');
+          return ranked;
         }
       }
     } catch (err) {
-      console.warn(`Gemini Top-3 ranking attempt (${model}) failed:`, err.message || err);
+      console.warn(`Gemini viral ranking attempt (${model}) failed:`, err.message || err);
       await new Promise((r) => setTimeout(r, 1000));
     }
   }
 
-  return candidates.slice(0, 3);
+  return candidates;
 }
 
-function toSrtTime(sec) {
-  const msTotal = Math.max(0, Math.round(sec * 1000));
-  const h = String(Math.floor(msTotal / 3600000)).padStart(2, '0');
-  const m = String(Math.floor((msTotal % 3600000) / 60000)).padStart(2, '0');
-  const s = String(Math.floor((msTotal % 60000) / 1000)).padStart(2, '0');
-  const ms = String(msTotal % 1000).padStart(3, '0');
-  return `${h}:${m}:${s},${ms}`;
+function toAssTime(sec) {
+  const csTotal = Math.max(0, Math.round(sec * 100));
+  const h = Math.floor(csTotal / 360000);
+  const m = String(Math.floor((csTotal % 360000) / 6000)).padStart(2, '0');
+  const s = String(Math.floor((csTotal % 6000) / 100)).padStart(2, '0');
+  const cs = String(csTotal % 100).padStart(2, '0');
+  return `${h}:${m}:${s}.${cs}`;
+}
+
+function escapeAssText(text) {
+  return String(text || '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/[{}]/g, '')
+    .replace(/\\/g, '')
+    .trim();
+}
+
+function buildViralAssFile(clipPlan, start, duration) {
+  const fontName = CAPTION_LANG === 'ur' ? 'Noto Sans Arabic' : 'DejaVu Sans';
+  const hookText = escapeAssText(clipPlan.hookBanner || clipPlan.shortTitle || 'GTA 6 SECRET YOU MISSED').slice(0, 42).toUpperCase();
+  const header = `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 1
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Hook,${fontName},56,&H0000E5FF,&H000000FF,&H00000000,&HC0000000,-1,0,0,0,100,100,1,0,3,12,0,8,70,70,195,1
+Style: Caption,${fontName},66,&H00FFFFFF,&H0000E5FF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,1,5,3,2,65,65,340,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+
+  const lines = [];
+  const hookEnd = Math.min(duration, 4.2);
+  if (hookText) {
+    lines.push(`Dialogue: 1,${toAssTime(0)},${toAssTime(hookEnd)},Hook,,0,0,0,,${hookText}`);
+  }
+
+  const caps = Array.isArray(clipPlan.captions) && clipPlan.captions.length
+    ? clipPlan.captions
+    : [{ startSec: 0, endSec: Math.min(duration, 4), text: clipPlan.shortTitle || 'GTA 6 Viral Detail' }];
+
+  for (const c of caps) {
+    const rawStart = Number(c.startSec || 0);
+    const rawEnd = Number(c.endSec || rawStart + 2.8);
+    const relStart = rawStart >= start && start > 0 ? rawStart - start : rawStart;
+    const relEnd = rawEnd >= start && start > 0 ? rawEnd - start : rawEnd;
+    const clampedStart = Math.max(0, Math.min(duration - 0.4, relStart));
+    const clampedEnd = Math.max(clampedStart + 0.4, Math.min(duration, relEnd));
+    const cleanText = escapeAssText(c.text);
+    if (cleanText) {
+      lines.push(`Dialogue: 0,${toAssTime(clampedStart)},${toAssTime(clampedEnd)},Caption,,0,0,0,,${cleanText}`);
+    }
+  }
+
+  return header + lines.join('\n') + '\n';
 }
 
 function cleanVttTranscript(raw) {
@@ -520,10 +636,10 @@ async function detectViralClipWithGemini(video, subtitleText) {
 
   const languageRule =
     CAPTION_LANG === 'ur'
-      ? 'Write shortTitle, shortDescription, and captions in crisp Urdu script.'
+      ? 'Write hookBanner, shortTitle, shortDescription, and captions in crisp Urdu script.'
       : CAPTION_LANG === 'roman-ur'
-        ? 'Write shortTitle, shortDescription, and captions in punchy Roman Urdu.'
-        : 'Write shortTitle, shortDescription, hashtags, and EVERY caption line STRICTLY in punchy, viral English ONLY (3-5 words per caption line, natural YouTube Shorts style, ZERO Urdu or non-English characters).';
+        ? 'Write hookBanner, shortTitle, shortDescription, and captions in punchy Roman Urdu.'
+        : 'Write hookBanner, shortTitle, shortDescription, hashtags, and EVERY caption line STRICTLY in punchy, high-retention viral English ONLY (2-4 words per caption line, natural YouTube Shorts style, ZERO Urdu or non-English characters).';
 
   const cleanTranscript = cleanVttTranscript(subtitleText);
 
@@ -531,18 +647,19 @@ async function detectViralClipWithGemini(video, subtitleText) {
     try {
       const response = await ai.models.generateContent({
         model,
-        contents: `Analyze this GTA 6 / USA gaming YouTube video and pick ONE highest-retention ${CLIP_DURATION}-second vertical Short segment (focus on the exact Easter egg reveal, funniest moment, or biggest discovery).
+        contents: `Analyze this viral GTA 6 video and pick ONE highest-retention ${CLIP_DURATION}-second vertical Short segment (28-48 seconds) designed to maximize Shorts views & watch-through rate (focus on the exact Easter egg reveal, leak bombshell, GTA 6 vs GTA 5/RDR2 comparison, or jaw-dropping hook).
 Title: ${video.title}
-Creator: ${video.channel || 'USA Creator'}
+Creator: ${video.channel || 'Creator'}
 Description: ${String(video.description || '').slice(0, 400)}
 Transcript excerpt: ${cleanTranscript}
 
 STRICT OUTPUT LIMITS (keep JSON compact and valid):
 - ${languageRule}
-- shortTitle: max 70 characters, high-CTR GTA 6 Shorts hook.
-- shortDescription: 1-2 short sentences (max 180 characters).
-- hashtags: ONLY 4 to 5 short hashtags (include #GTA6 #Gaming).
-- captions: ONLY 8 to 14 caption objects total covering 0 to ${CLIP_DURATION} seconds (3-5 words per caption). Never repeat captions.`,
+- hookBanner: 3 to 5 punchy uppercase words shown at the top for the first 4 seconds to stop scrolling (e.g. "GTA 6 SECRET YOU MISSED!").
+- shortTitle: max 68 characters, irresistible curiosity-gap GTA 6 Shorts title.
+- shortDescription: 1-2 short sentences (max 160 characters) summarizing the viral moment.
+- hashtags: ONLY 4 to 5 high-reach hashtags (include #GTA6 #GTAVI #Gaming).
+- captions: ONLY 10 to 16 caption objects covering 0 to ${CLIP_DURATION} seconds (2-4 punchy words per line). Never repeat captions.`,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
@@ -550,6 +667,7 @@ STRICT OUTPUT LIMITS (keep JSON compact and valid):
             properties: {
               startSec: { type: Type.NUMBER },
               endSec: { type: Type.NUMBER },
+              hookBanner: { type: Type.STRING },
               shortTitle: { type: Type.STRING },
               shortDescription: { type: Type.STRING },
               hashtags: { type: Type.ARRAY, items: { type: Type.STRING } },
@@ -571,7 +689,7 @@ STRICT OUTPUT LIMITS (keep JSON compact and valid):
       if (response.text) {
         const parsed = JSON.parse(response.text.trim());
         if (Array.isArray(parsed.captions)) {
-          parsed.captions = parsed.captions.slice(0, 16);
+          parsed.captions = parsed.captions.slice(0, 18);
         }
         return parsed;
       }
@@ -583,7 +701,7 @@ STRICT OUTPUT LIMITS (keep JSON compact and valid):
   throw lastErr || new Error('Gemini analysis returned empty output.');
 }
 
-async function uploadShortToYouTube(videoPath, clipPlan) {
+async function uploadShortToYouTube(videoPath, clipPlan, sourceVideo) {
   const oauth2 = new google.auth.OAuth2(
     process.env.YOUTUBE_CLIENT_ID,
     process.env.YOUTUBE_CLIENT_SECRET
@@ -591,13 +709,18 @@ async function uploadShortToYouTube(videoPath, clipPlan) {
   oauth2.setCredentials({ refresh_token: process.env.YOUTUBE_REFRESH_TOKEN });
   const youtube = google.youtube({ version: 'v3', auth: oauth2 });
 
-  const tags = (clipPlan.hashtags || []).map((t) => t.replace(/^#/, ''));
+  const tags = Array.from(
+    new Set(['GTA6', 'GTAVI', 'Shorts', 'Gaming', ...(clipPlan.hashtags || []).map((t) => t.replace(/^#/, ''))])
+  ).slice(0, 12);
+  const creditLine = sourceVideo?.channel
+    ? `\n\nOriginal creator credit: ${sourceVideo.channel} (${sourceVideo.url})`
+    : '';
   const res = await youtube.videos.insert({
     part: ['snippet', 'status'],
     requestBody: {
       snippet: {
         title: `${clipPlan.shortTitle} #Shorts`.slice(0, 99),
-        description: `${clipPlan.shortDescription}\n\n${(clipPlan.hashtags || []).join(' ')} #Shorts`,
+        description: `${clipPlan.shortDescription}${creditLine}\n\n${(clipPlan.hashtags || []).join(' ')} #Shorts`,
         tags,
         categoryId: '20',
       },
@@ -660,25 +783,24 @@ function prepareCookiesFile(rawCookies) {
 }
 
 function downloadVideoWithFallback(videoUrl, hasCookies, durationSec = 0) {
-  // Use 720p cap for longer stream VODs (>20 min) so downloads stay fast and crisp for 9:16 Shorts
   const formatSelector =
     durationSec > 1200
       ? 'bv*[height<=720]+ba/b[height<=720]/bv*+ba/b'
       : 'bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b';
 
+  const jsRuntime = process.platform === 'linux' ? 'deno,node' : 'node';
+  const proxyUrl = (process.env.YTDLP_PROXY || '').trim();
+  const proxyArgs = proxyUrl ? ['--proxy', proxyUrl] : [];
+
   const baseArgs = [
-    '--js-runtimes', 'node',
+    '--js-runtimes', jsRuntime,
     '--sleep-requests', '1',
+    '--retries', '2',
     '-f', formatSelector,
     '--merge-output-format', 'mp4',
     '--match-filter', '!is_live',
     '-o', 'source.%(ext)s',
   ];
-
-  if (process.env.YTDLP_PROXY && process.env.YTDLP_PROXY.trim()) {
-    baseArgs.push('--proxy', process.env.YTDLP_PROXY.trim());
-    console.log('Using configured YTDLP_PROXY for yt-dlp requests.');
-  }
 
   const bgutilArgs =
     process.env.GITHUB_ACTIONS && process.platform === 'linux'
@@ -688,25 +810,31 @@ function downloadVideoWithFallback(videoUrl, hasCookies, durationSec = 0) {
   const strategies = [];
   if (hasCookies) {
     strategies.push({
-      label: 'cookies + mweb/tv/web_safari + bgutil PO token',
-      extraArgs: ['--cookies', 'cookies.txt', ...bgutilArgs, '--extractor-args', 'youtube:player_client=mweb,tv,web_safari,web_creator'],
+      label: 'cookies + proxy + mweb/tv/web_safari + bgutil PO token',
+      extraArgs: [...proxyArgs, '--cookies', 'cookies.txt', ...bgutilArgs, '--extractor-args', 'youtube:player_client=mweb,tv,web_safari,web_creator'],
     });
     strategies.push({
-      label: 'cookies + default client + bgutil PO token',
+      label: 'cookies + direct + default client + bgutil PO token',
       extraArgs: ['--cookies', 'cookies.txt', ...bgutilArgs],
     });
   }
+  if (proxyUrl) {
+    strategies.push({
+      label: 'WARP/proxy + tv_embedded/android_vr/mweb + bgutil PO token',
+      extraArgs: [...proxyArgs, '--force-ipv4', ...bgutilArgs, '--extractor-args', 'youtube:player_client=tv_embedded,android_vr,mweb'],
+    });
+    strategies.push({
+      label: 'WARP/proxy + web_safari/ios/tv + bgutil PO token',
+      extraArgs: [...proxyArgs, '--force-ipv4', ...bgutilArgs, '--extractor-args', 'youtube:player_client=web_safari,ios,tv'],
+    });
+  }
   strategies.push({
-    label: 'default yt-dlp client (best for home/residential IP)',
-    extraArgs: ['--force-ipv4'],
+    label: 'direct + tv_embedded/android_vr/web_safari + bgutil PO token',
+    extraArgs: ['--force-ipv4', ...bgutilArgs, '--extractor-args', 'youtube:player_client=tv_embedded,android_vr,web_safari'],
   });
   strategies.push({
-    label: 'cookieless + tv/web_safari/android_vr fallback',
-    extraArgs: ['--force-ipv4', ...bgutilArgs, '--extractor-args', 'youtube:player_client=tv,web_safari,android_vr'],
-  });
-  strategies.push({
-    label: 'cookieless + mweb/android_vr + bgutil PO token',
-    extraArgs: [...bgutilArgs, '--extractor-args', 'youtube:player_client=mweb,android_vr'],
+    label: 'direct + default yt-dlp client',
+    extraArgs: ['--force-ipv4', ...bgutilArgs],
   });
 
   let lastError = null;
@@ -730,10 +858,7 @@ function downloadVideoWithFallback(videoUrl, hasCookies, durationSec = 0) {
   }
 
   try {
-    const subArgs = ['--js-runtimes', 'node', '--skip-download', '--write-auto-sub', '--sub-format', 'vtt', '-o', 'source.%(ext)s'];
-    if (process.env.YTDLP_PROXY && process.env.YTDLP_PROXY.trim()) {
-      subArgs.push('--proxy', process.env.YTDLP_PROXY.trim());
-    }
+    const subArgs = ['--js-runtimes', jsRuntime, '--skip-download', '--write-auto-sub', '--sub-format', 'vtt', '-o', 'source.%(ext)s'];
     execFileSync('yt-dlp', [...subArgs, ...winningExtraArgs, videoUrl], { stdio: 'inherit' });
   } catch {
     console.warn('Auto-subtitles unavailable or rate-limited; falling back to video title & description for Gemini.');
@@ -762,7 +887,7 @@ async function processAndUploadVideo(chosenVideo, history) {
     downloadVideoWithFallback(chosenVideo.url, hasCookies, chosenVideo.durationSec || 0);
 
     if (!fs.existsSync('source.mp4')) {
-      throw new Error('Video download was skipped (possibly an active live stream) or source.mp4 was not created.');
+      throw new Error('Video download was skipped or source.mp4 was not created.');
     }
 
     const vttFile = fs.readdirSync('.').find((f) => f.startsWith('source.') && f.endsWith('.vtt'));
@@ -770,44 +895,32 @@ async function processAndUploadVideo(chosenVideo, history) {
 
     const clipPlan = await detectViralClipWithGemini(chosenVideo, subtitleText);
     const totalDuration = getVideoDurationSec('source.mp4');
-    let start = Math.max(0, Math.floor(clipPlan.startSec || 10));
-    let duration = Math.min(58, Math.max(15, Math.floor((clipPlan.endSec || start + CLIP_DURATION) - start)));
-    if (totalDuration > 0) {
-      if (start >= totalDuration - 10) start = 0;
-      duration = Math.min(duration, Math.max(5, Math.floor(totalDuration - start)));
+    if (totalDuration < 15) {
+      throw new Error(`Downloaded source video too short (${totalDuration}s); skipping.`);
     }
 
-    const srtBody = (clipPlan.captions || [])
-      .map((c, idx) => {
-        const rawStart = Number(c.startSec || 0);
-        const rawEnd = Number(c.endSec || rawStart + 3);
-        const relStart = rawStart >= start && start > 0 ? rawStart - start : rawStart;
-        const relEnd = rawEnd >= start && start > 0 ? rawEnd - start : rawEnd;
-        const clampedStart = Math.max(0, Math.min(duration - 0.5, relStart));
-        const clampedEnd = Math.max(clampedStart + 0.5, Math.min(duration, relEnd));
-        return `${idx + 1}\n${toSrtTime(clampedStart)} --> ${toSrtTime(clampedEnd)}\n${c.text}`;
-      })
-      .join('\n\n');
-    fs.writeFileSync('captions.srt', srtBody || `1\n00:00:00,000 --> 00:00:04,000\n${clipPlan.shortTitle}\n`);
+    let start = Math.max(0, Math.floor(clipPlan.startSec || 10));
+    let duration = Math.min(56, Math.max(20, Math.floor((clipPlan.endSec || start + CLIP_DURATION) - start)));
+    if (start >= totalDuration - 15) start = 0;
+    duration = Math.min(duration, Math.max(15, Math.floor(totalDuration - start)));
 
-    const subtitleStyle =
-      CAPTION_LANG === 'ur'
-        ? "FontName=Noto Sans Arabic,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=2,Alignment=2,MarginV=75"
-        : "FontName=Arial,FontSize=20,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=3,Shadow=1,Alignment=2,MarginV=95";
+    const assBody = buildViralAssFile(clipPlan, start, duration);
+    fs.writeFileSync('captions.ass', assBody, 'utf8');
 
     execFileSync('ffmpeg', [
       '-y',
       '-ss', String(start),
       '-i', 'source.mp4',
       '-t', String(duration),
-      '-vf', `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,subtitles=captions.srt:force_style='${subtitleStyle}'`,
+      '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,eq=contrast=1.05:saturation=1.12,ass=captions.ass',
+      '-af', 'loudnorm=I=-14:TP=-1.5:LRA=11',
       '-c:v', 'libx264', '-preset', 'fast', '-crf', '22',
       '-c:a', 'aac', '-b:a', '128k',
       '-movflags', '+faststart',
       'output_short.mp4',
     ], { stdio: 'inherit' });
 
-    await uploadShortToYouTube('output_short.mp4', clipPlan);
+    await uploadShortToYouTube('output_short.mp4', clipPlan, chosenVideo);
     history.uploadedClipKeys.push(chosenVideo.videoId);
     saveHistory(history);
   } finally {
@@ -817,52 +930,56 @@ async function processAndUploadVideo(chosenVideo, history) {
 
 async function run() {
   if (!CHANNEL_IDS.length && DISCOVERY_MODE === 'channels_only') {
-    throw new Error('Set SOURCE_CHANNEL_IDS or use DISCOVERY_MODE=usa_viral.');
+    throw new Error('Set SOURCE_CHANNEL_IDS or use DISCOVERY_MODE=hybrid / usa_viral.');
   }
   if (!process.env.GEMINI_API_KEY) throw new Error('Missing GEMINI_API_KEY secret.');
   if (!process.env.YOUTUBE_REFRESH_TOKEN) throw new Error('Missing YOUTUBE_REFRESH_TOKEN secret.');
 
   const history = loadHistory();
-  let selectedVideos = [];
+  let candidatePool = [];
 
   if (DISCOVERY_MODE !== 'channels_only') {
     const freshCandidates = await discoverLast24hGta6UsaCandidates(history);
     if (freshCandidates.length > 0) {
-      const top3 = await rankTop3ViralWithGemini(freshCandidates);
-      selectedVideos = top3.slice(0, MAX_CLIPS_PER_RUN);
+      candidatePool = await rankTop3ViralWithGemini(freshCandidates);
     }
   }
 
-  if (selectedVideos.length === 0 && DISCOVERY_MODE !== 'usa_viral') {
+  if (DISCOVERY_MODE !== 'usa_viral') {
     for (const cid of CHANNEL_IDS) {
-      const videos = await fetchLatestVideosFromRss(cid);
-      const nextUnclipped = videos.find((v) => !history.uploadedClipKeys.includes(v.videoId));
-      if (nextUnclipped) {
-        selectedVideos.push(nextUnclipped);
-        if (selectedVideos.length >= MAX_CLIPS_PER_RUN) break;
+      try {
+        const videos = await fetchLatestVideosFromRss(cid);
+        for (const v of videos) {
+          if (!history.uploadedClipKeys.includes(v.videoId) && !candidatePool.some((c) => c.videoId === v.videoId)) {
+            candidatePool.push(v);
+          }
+        }
+      } catch (err) {
+        console.warn(`Fallback RSS fetch failed for ${cid}:`, err.message || err);
       }
     }
   }
 
-  if (selectedVideos.length === 0) {
-    console.log('No new unclipped USA GTA 6 videos found in this window.');
+  if (candidatePool.length === 0) {
+    console.log('No new unclipped copyright-safe GTA 6 videos found in this window.');
     return;
   }
 
   let uploadedCount = 0;
+  const maxAttempts = Math.min(candidatePool.length, MAX_CLIPS_PER_RUN + 5);
 
-  for (const video of selectedVideos) {
+  for (let i = 0; i < maxAttempts && uploadedCount < MAX_CLIPS_PER_RUN; i++) {
+    const video = candidatePool[i];
     try {
       await processAndUploadVideo(video, history);
       uploadedCount += 1;
     } catch (err) {
-      console.error(`Failed processing "${video.title}":`, err.message || err);
-      if (selectedVideos.length === 1) throw err;
+      console.warn(`Candidate #${i + 1} failed ("${video.title}"): ${err.message || err} — automatically trying next candidate...`);
     }
   }
 
   if (uploadedCount === 0) {
-    throw new Error('All selected viral candidates failed to process/upload.');
+    throw new Error(`Tried ${maxAttempts} viral GTA 6 candidates but none could be downloaded/uploaded.`);
   }
   console.log(`Completed run cleanly: uploaded ${uploadedCount} Short(s).`);
 }
