@@ -2,54 +2,114 @@ name: ClipPulse 24/7 YouTube Auto-Clip Agent
 
 on:
   schedule:
-    - cron: '5 18 * * *' # 13:05 (America/New_York (EST, UTC-5))
+    - cron: '5 17 * * *' # 12:05 (America/New_York (EST, UTC-5))
     - cron: '5 20 * * *' # 15:05 (America/New_York (EST, UTC-5))
-    - cron: '5 22 * * *' # 17:05 (America/New_York (EST, UTC-5))
     - cron: '5 0 * * *' # 19:05 (America/New_York (EST, UTC-5))
-    - cron: '5 2 * * *' # 21:05 (America/New_York (EST, UTC-5))
   workflow_dispatch: # Run manually anytime from GitHub Actions tab
 
 permissions:
   contents: write
 
+concurrency:
+  group: clippulse-gta6-agent
+  cancel-in-progress: false
+
 jobs:
   clip-and-upload:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Node dependencies
-        shell: cmd
-        run: npm.cmd install
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-      - name: Run ClipPulse GTA 6 USA 24h Viral Hunter & Upload Agent
-        shell: cmd
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Deno JS Runtime (for yt-dlp YouTube EJS solver)
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install yt-dlp, bgutil PO Token plugin, FFmpeg, and Fonts (100% Free Cloud)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg fonts-noto-core fonts-dejavu-core fontconfig
+          sudo fc-cache -fv
+          python -m pip install --upgrade pip
+          pip install --upgrade "yt-dlp[default]" yt-dlp-ejs bgutil-ytdlp-pot-provider pysocks
+
+      - name: Start Cloudflare WARP Local Proxy (Bypasses Cloud Datacenter IP Limits)
+        continue-on-error: true
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflare.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -y
+          sudo apt-get install -y cloudflare-warp
+          sudo systemctl start warp-svc
+          sleep 2
+          warp-cli --accept-tos registration new || true
+          warp-cli --accept-tos mode proxy
+          warp-cli --accept-tos proxy port 40000
+          warp-cli --accept-tos connect
+          for i in 1 2 3 4 5; do
+            if curl -sf --max-time 8 -x socks5://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace/ | grep -q "warp=on"; then
+              echo "WARP_PROXY=socks5://127.0.0.1:40000" >> "$GITHUB_ENV"
+              echo "Cloudflare WARP SOCKS5 proxy active on 127.0.0.1:40000"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Start BGUtil YouTube PO Token Provider (Bypasses Cloud IP Bot Check)
+        continue-on-error: true
+        run: |
+          docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+          for i in 1 2 3 4 5 6 7 8; do
+            if curl -sf --max-time 2 http://127.0.0.1:4416/ping >/dev/null 2>&1; then
+              echo "BGUtil PO Token Provider ready on 127.0.0.1:4416"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Run ClipPulse 24/7 Cloud GTA 6 Viral Hunter & Auto-Upload Agent
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           SOURCE_CHANNEL_IDS: 'UCxYc7wg6otUcDb5bWxTwWqA'
-          DISCOVERY_MODE: 'usa_viral'
-          CREATOR_REGION: 'US'
-          MAX_VIDEO_AGE_HOURS: '24'
+          DISCOVERY_MODE: 'hybrid'
+          CREATOR_REGION: 'US_UK_GLOBAL'
+          MAX_VIDEO_AGE_HOURS: '48'
           MAX_CLIPS_PER_RUN: '1'
           INCLUDE_LIVE_VODS: 'true'
           PRIORITIZE_CLIP_ALLOWED: 'true'
+          REQUIRE_CLIP_ALLOWED: 'true'
           PRIORITIZE_BIG_CREATORS: 'true'
-          MIN_CREATOR_SUBSCRIBERS: '50000'
-          USA_VIRAL_TOPICS: 'GTA 6 easter egg secret found,GTA 6 funny moments gameplay clips,GTA 6 new discovery hidden detail update,GTA 6 live stream highlights reaction'
+          MIN_CREATOR_SUBSCRIBERS: '25000'
+          USA_VIRAL_TOPICS: 'GTA 6 easter egg hidden secret details,GTA 6 leaks new discovery breakdown,GTA 6 vs GTA 5 RDR2 comparison graphics physics,GTA 6 crazy moments viral trending clips,GTA 6 map details trailer breakdown new update'
           TARGET_CHANNEL_HANDLE: '@GTA6Vault3'
           CAPTION_LANGUAGE: 'en'
           CAPTION_STYLE: 'karaoke'
-          CLIP_DURATION_SEC: '45'
+          CLIP_DURATION_SEC: '42'
           UPLOAD_VISIBILITY: 'public'
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          YTDLP_PROXY: ${{ secrets.YTDLP_PROXY || env.WARP_PROXY }}
         run: node agent.mjs
 
       - name: Persist uploaded clip history
-        shell: cmd
+        if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
