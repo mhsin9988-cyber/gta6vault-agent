@@ -30,7 +30,7 @@ const USA_VIRAL_TOPICS = (
   .map((s) => s.trim())
   .filter(Boolean);
 const CAPTION_LANG = (process.env.CAPTION_LANGUAGE || 'en').trim().toLowerCase();
-const CLIP_DURATION = Number(process.env.CLIP_DURATION_SEC || '42');
+const CLIP_DURATION = Math.max(65, Math.min(110, Number(process.env.CLIP_DURATION_SEC || '85')));
 const VISIBILITY = process.env.UPLOAD_VISIBILITY || 'public';
 
 const channelProfileCache = new Map();
@@ -328,7 +328,7 @@ async function discoverLast24hGta6UsaCandidates(history) {
           if (!hasMostlyLatinText(item.title)) continue;
 
           const dur = Number(item.duration || 0);
-          if (dur < 65 || dur > 5400) continue;
+          if (dur < 100 || dur > 5400) continue;
 
           dedupMap.set(item.id, {
             videoId: item.id,
@@ -626,7 +626,7 @@ function cleanVttTranscript(raw) {
       cleanLines.push(trimmed);
     }
   }
-  return cleanLines.join(' ').slice(0, 3500);
+  return cleanLines.join(' ').slice(0, 6500);
 }
 
 async function detectViralClipWithGemini(video, subtitleText) {
@@ -639,15 +639,18 @@ async function detectViralClipWithGemini(video, subtitleText) {
       ? 'Write hookBanner, shortTitle, shortDescription, and captions in crisp Urdu script.'
       : CAPTION_LANG === 'roman-ur'
         ? 'Write hookBanner, shortTitle, shortDescription, and captions in punchy Roman Urdu.'
-        : 'Write hookBanner, shortTitle, shortDescription, hashtags, and EVERY caption line STRICTLY in punchy, high-retention viral English ONLY (2-4 words per caption line, natural YouTube Shorts style, ZERO Urdu or non-English characters).';
+        : 'Write hookBanner, shortTitle, shortDescription, hashtags, and EVERY caption line STRICTLY in punchy, high-retention viral English ONLY (2-5 words per caption line, natural YouTube Shorts style, ZERO Urdu or non-English characters).';
 
   const cleanTranscript = cleanVttTranscript(subtitleText);
+  const minTarget = Math.max(65, CLIP_DURATION - 15);
+  const maxTarget = Math.min(105, CLIP_DURATION + 15);
 
   for (const model of models) {
     try {
       const response = await ai.models.generateContent({
         model,
-        contents: `Analyze this viral GTA 6 video and pick ONE highest-retention ${CLIP_DURATION}-second vertical Short segment (28-48 seconds) designed to maximize Shorts views & watch-through rate (focus on the exact Easter egg reveal, leak bombshell, GTA 6 vs GTA 5/RDR2 comparison, or jaw-dropping hook).
+        contents: `Analyze this viral GTA 6 video and pick ONE complete, high-retention monetizable vertical YouTube Short segment that is STRICTLY between ${minTarget} and ${maxTarget} seconds long (target ~${CLIP_DURATION} seconds / 1 to 1.5 minutes — NEVER shorter than 65 seconds!).
+Pick a complete mini-story arc (instant 3-second hook -> build-up -> Easter egg / leak / comparison reveal -> payoff) to maximize watch time and Shorts monetization.
 Title: ${video.title}
 Creator: ${video.channel || 'Creator'}
 Description: ${String(video.description || '').slice(0, 400)}
@@ -655,11 +658,12 @@ Transcript excerpt: ${cleanTranscript}
 
 STRICT OUTPUT LIMITS (keep JSON compact and valid):
 - ${languageRule}
+- endSec - startSec MUST be between ${minTarget} and ${maxTarget} seconds (around ${CLIP_DURATION}s).
 - hookBanner: 3 to 5 punchy uppercase words shown at the top for the first 4 seconds to stop scrolling (e.g. "GTA 6 SECRET YOU MISSED!").
 - shortTitle: max 68 characters, irresistible curiosity-gap GTA 6 Shorts title.
 - shortDescription: 1-2 short sentences (max 160 characters) summarizing the viral moment.
 - hashtags: ONLY 4 to 5 high-reach hashtags (include #GTA6 #GTAVI #Gaming).
-- captions: ONLY 10 to 16 caption objects covering 0 to ${CLIP_DURATION} seconds (2-4 punchy words per line). Never repeat captions.`,
+- captions: 20 to 30 concise caption objects evenly covering the FULL clip from 0 to ${CLIP_DURATION} seconds (2-5 punchy words per line). Never repeat captions.`,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
@@ -689,7 +693,7 @@ STRICT OUTPUT LIMITS (keep JSON compact and valid):
       if (response.text) {
         const parsed = JSON.parse(response.text.trim());
         if (Array.isArray(parsed.captions)) {
-          parsed.captions = parsed.captions.slice(0, 18);
+          parsed.captions = parsed.captions.slice(0, 36);
         }
         return parsed;
       }
@@ -921,14 +925,20 @@ async function processAndUploadVideo(chosenVideo, history) {
 
     const clipPlan = await detectViralClipWithGemini(chosenVideo, subtitleText);
     const totalDuration = getVideoDurationSec('source.mp4');
-    if (totalDuration < 15) {
-      throw new Error(`Downloaded source video too short (${totalDuration}s); skipping.`);
+    const minClipSec = Math.max(65, Math.min(80, CLIP_DURATION - 15));
+    const maxClipSec = Math.min(110, Math.max(95, CLIP_DURATION + 15));
+    if (totalDuration < minClipSec) {
+      throw new Error(`Downloaded source video too short (${Math.round(totalDuration)}s < ${minClipSec}s monetizable minimum); skipping.`);
     }
 
     let start = Math.max(0, Math.floor(clipPlan.startSec || 10));
-    let duration = Math.min(56, Math.max(20, Math.floor((clipPlan.endSec || start + CLIP_DURATION) - start)));
-    if (start >= totalDuration - 15) start = 0;
-    duration = Math.min(duration, Math.max(15, Math.floor(totalDuration - start)));
+    const requestedDur = Math.floor((clipPlan.endSec || start + CLIP_DURATION) - start);
+    let duration = Math.min(maxClipSec, Math.max(minClipSec, requestedDur));
+    if (start + duration > totalDuration) {
+      start = Math.max(0, Math.floor(totalDuration - duration));
+    }
+    duration = Math.min(duration, Math.floor(totalDuration - start));
+    console.log(`Rendering monetizable Short: start=${start}s, duration=${duration}s (source=${Math.round(totalDuration)}s)`);
 
     const assBody = buildViralAssFile(clipPlan, start, duration);
     fs.writeFileSync('captions.ass', assBody, 'utf8');
